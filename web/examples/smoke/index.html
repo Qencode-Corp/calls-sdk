@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@qencode/calls smoke</title>
+<style>
+body{margin:0;background:#0e151b;color:#e6eef5;font:14px/1.45 system-ui,sans-serif;padding:1rem}
+textarea{width:100%;height:5rem;font:12px ui-monospace,monospace;background:#161f27;color:#e6eef5;border:1px solid #263340}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0}
+button{font:13px ui-monospace,monospace;padding:.3em .7em;background:#1d2830;color:#e6eef5;border:1px solid #263340;border-radius:4px;cursor:pointer}
+.videos{display:flex;gap:.6rem;flex-wrap:wrap}
+qencode-video,video{background:#000;border-radius:6px}
+#remote{width:640px;height:360px} #local{width:240px;height:135px}
+#log{font:12px ui-monospace,monospace;white-space:pre-wrap;background:#161f27;border:1px solid #263340;border-radius:6px;padding:.5rem;max-height:14rem;overflow:auto}
+#stats{font:12px ui-monospace,monospace;white-space:pre-wrap}
+.ok{color:#3bcb7f}.bad{color:#f06a5c}.warn{color:#f0b44c}
+</style>
+<h3>@qencode/calls smoke <small id="ver"></small></h3>
+<textarea id="cred" placeholder='paste the credential JSON from POST /v1/calls/{id}/tokens'></textarea>
+<div class="row">
+  <button id="join">connect</button><button id="leave">leave</button>
+  <button id="mic">mic off</button><button id="cam">cam off</button>
+  <button id="prof">profile 720p30</button><button id="mode">mode smooth</button>
+  <button id="msg">send message</button><span id="state" class="warn">idle</span>
+</div>
+<div class="videos"><qencode-video id="remote"></qencode-video><qencode-video id="local" mirror></qencode-video></div>
+<pre id="stats"></pre>
+<div id="log"></div>
+<script src="../../dist/qencode-calls.umd.js"></script>
+<script>
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  const log = (m, cls) => { const d = document.createElement('div'); d.textContent = new Date().toISOString().slice(11, 19) + ' ' + m; if (cls) d.className = cls; $('log').prepend(d); };
+  const SDK = window.QencodeCalls;
+  if (!SDK) { log('UMD global QencodeCalls missing', 'bad'); return; }
+  $('ver').textContent = 'v' + (SDK.SDK_VERSION || '?');
+  window.__events = [];
+  let call = null, micOn = true, camOn = true, prof = 'p540_60', mode = 'lowest';
+  const q = new URLSearchParams(location.search);
+  if (q.get('cred')) { try { $('cred').value = atob(q.get('cred')); } catch (e) { log('bad cred param', 'bad'); } }
+  $('join').onclick = async () => {
+    try {
+      const cred = JSON.parse($('cred').value);
+      call = SDK.Call.create(cred, { videoProfile: prof, latencyMode: mode, telemetry: false, adaptiveStream: q.get('adaptive') !== '0', apiBase: q.get('api') || undefined });
+      window.__call = call;
+      const rec = (name) => (...a) => { window.__events.push([name, ...a.map(x => (x && typeof x === 'object' && !(x instanceof Error)) ? JSON.parse(JSON.stringify(x, (k, v) => (v instanceof MediaStreamTrack || v instanceof Element) ? '[obj]' : v)) : String(x))]); };
+      for (const ev of ['stateChanged', 'peerJoined', 'peerLeft', 'peerMuted', 'qualityChanged', 'message', 'credentialExpiring', 'devicesChanged', 'error', 'moderation']) {
+        call.on(ev, (...a) => { rec(ev)(...a); log(ev + ' ' + a.map(x => typeof x === 'string' ? x : (x && x.code) || (x && x.identity) || JSON.stringify(x)).join(' '), ev === 'error' ? 'bad' : ''); });
+      }
+      call.on('stateChanged', (s) => { $('state').textContent = s; $('state').className = s === 'connected' ? 'ok' : (s === 'ended' ? 'bad' : 'warn'); });
+      call.on('remoteVideo', (t) => { if (t) t.attach($('remote')); else log('remote video removed'); });
+      call.on('stats', (s) => { $('stats').textContent = JSON.stringify(s, null, 1); });
+      await call.connect();
+      if (call.localVideo) call.localVideo.attach($('local'));
+      log('connected; peer=' + (call.peer ? call.peer.identity : 'none'), 'ok');
+    } catch (e) { log('connect failed: ' + (e.code || '') + ' ' + e.message, 'bad'); console.error(e); }
+  };
+  $('leave').onclick = async () => { if (call) await call.leave(); log('left'); };
+  $('mic').onclick = async () => { micOn = !micOn; await call.setMicrophoneEnabled(micOn); $('mic').textContent = micOn ? 'mic off' : 'mic on'; };
+  $('cam').onclick = async () => { camOn = !camOn; await call.setCameraEnabled(camOn); $('cam').textContent = camOn ? 'cam off' : 'cam on'; };
+  $('prof').onclick = async () => { prof = prof === 'p540_60' ? 'p720_30' : 'p540_60'; await call.setVideoProfile(prof); $('prof').textContent = 'profile ' + (prof === 'p540_60' ? 'p720_30' : 'p540_60'); log('profile -> ' + prof); };
+  $('mode').onclick = async () => { mode = mode === 'lowest' ? 'smooth' : 'lowest'; await call.setLatencyMode(mode); $('mode').textContent = 'mode ' + (mode === 'lowest' ? 'smooth' : 'lowest'); log('mode -> ' + mode); };
+  $('msg').onclick = async () => { await call.sendMessage({ hello: 'from ' + (call.peer ? 'me' : 'nobody'), at: Date.now() }, true); log('message sent'); };
+})();
+</script>

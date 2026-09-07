@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qencode Calls example</title>
+<style>
+  body{margin:0;font:14px/1.4 system-ui,sans-serif;background:#0e151b;color:#e6eef5}
+  main{max-width:1100px;margin:0 auto;padding:1rem;display:grid;gap:.8rem}
+  .stage{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:.8rem}
+  qencode-video{width:100%;border-radius:8px;background:#000}
+  #self{border:1px solid #2a3642}
+  .bar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+  button,select{font:inherit;padding:.4em .8em;border-radius:6px;border:1px solid #2a3642;background:#161e26;color:inherit}
+  button.on{border-color:#5ccbf0;color:#5ccbf0}
+  .status{margin-left:auto;font-family:ui-monospace,monospace;font-size:.85rem}
+  .q-good{color:#3bcb7f}.q-fair{color:#f0b44c}.q-poor{color:#f06a5c}
+  table{font-family:ui-monospace,monospace;font-size:.8rem;border-collapse:collapse}
+  td{padding:.15em .6em .15em 0;color:#93a5b6} td.v{color:#e6eef5;text-align:right}
+</style>
+<main>
+  <div class="bar">
+    <label>Join as <select id="who"><option value="alice">alice (A)</option><option value="bob">bob (B)</option></select></label>
+    <button id="join">Join</button>
+    <button id="leave" disabled>Leave</button>
+    <button id="mic" disabled>Mute mic</button>
+    <button id="cam" disabled>Camera off</button>
+    <select id="profile" disabled><option>p540_60</option><option>p540_30</option><option>p720_30</option><option>p720_60</option><option>p1080_30</option><option>p360_30</option></select>
+    <select id="mode" disabled><option value="lowest">lowest latency</option><option value="smooth">smooth</option></select>
+    <select id="camera" disabled></select>
+    <select id="micdev" disabled></select>
+    <span id="status" class="status">idle</span>
+  </div>
+  <div class="stage">
+    <qencode-video id="remote"></qencode-video>
+    <div>
+      <qencode-video id="self" mirror></qencode-video>
+      <table id="stats"></table>
+    </div>
+  </div>
+  <div class="bar"><input id="msg" placeholder="message to peer" style="flex:1;font:inherit;padding:.4em;border-radius:6px;border:1px solid #2a3642;background:#161e26;color:inherit"><button id="send" disabled>Send</button><span id="inbox"></span></div>
+</main>
+<script type="module" src="./app.js"></script>
