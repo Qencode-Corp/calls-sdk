@@ -26,6 +26,12 @@ jobs:
         run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
       - run: npm test
       - run: npm run build
+      - name: skip when this version is already on npm (published by hand)
+        id: published
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "@qencode/calls@$v" version >/dev/null 2>&1; then echo "already=true" >> "$GITHUB_OUTPUT"; echo "@qencode/calls@$v is already published"; else echo "already=false" >> "$GITHUB_OUTPUT"; fi
       - run: npm publish --provenance --access public
+        if: steps.published.outputs.already != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

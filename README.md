@@ -7,7 +7,7 @@ publishes camera and microphone, renders the remote stream, and reports call qua
 
 | Package | Platform | Status |
 |---|---|---|
-| [`@qencode/calls`](web/) | Web, TypeScript, evergreen browsers | 0.2.0 pre-release |
+| [`@qencode/calls`](web/) | Web, TypeScript, evergreen browsers | [0.2.0 on npm](https://www.npmjs.com/package/@qencode/calls), pre-release |
 | `com.qencode:calls` | Android, Kotlin, API 24+ | in development |
 | [`QencodeCalls`](https://github.com/Qencode-Corp/calls-sdk-swift) | iOS 15+, Swift Package | in development, separate repository |
 | `@qencode/calls-server`, `qencode-calls` (PyPI) | Node and Python helpers for the token step | in development |
