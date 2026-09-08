@@ -1,6 +1,6 @@
 import { ConnectionError, ConnectionErrorReason } from 'livekit-client';
 
-/** Stable error codes, identical on every platform. See the SDK spec, section 08. */
+/** Stable error codes, identical on every platform (web, iOS, Android). */
 export type CallErrorCode =
   | 'credentialInvalid'
   | 'credentialExpired'

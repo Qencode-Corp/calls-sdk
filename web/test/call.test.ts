@@ -463,7 +463,7 @@ describe('Custom video source, encoding and jitter target (0.2.0)', () => {
   });
 });
 
-describe('regressions found in the stage smoke test', () => {
+describe('regressions found in the first live smoke test', () => {
   it('reports a peer already in the room as peerJoined right after connected', async () => {
     MockRoom.onConnect = (r: any) => { r.remoteParticipants.set('bob', bob()); };
     const call = Call.create(credential(), { telemetry: false });

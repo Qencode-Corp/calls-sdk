@@ -55,8 +55,7 @@ Return that last object to the browser (optionally add `call_id` and `api_base`)
 | `dist/qencode-calls.umd.js` | classic `<script>`; exposes `window.QencodeCalls`; engine included | ~154 KB |
 
 The SDK itself is about 11 KB gzipped. The self-contained builds are dominated by the engine,
-which is about 145 KB gzipped on its own; the spec's 120 KB target for a bundle that includes
-the engine is not met by this engine version and is tracked as a known gap.
+which is about 145 KB gzipped on its own.
 
 ## Call
 

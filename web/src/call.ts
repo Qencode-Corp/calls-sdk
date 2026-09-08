@@ -74,7 +74,7 @@ export interface CallOptions {
   /** Initial camera and microphone device ids. */
   cameraId?: string;
   microphoneId?: string;
-  /** End the call when the peer leaves. Default true, the 1:1 semantics of the spec. */
+  /** End the call when the peer leaves. Default true: a 1:1 call is over when one side is gone. */
   endOnPeerLeft?: boolean;
   /**
    * Let the engine adapt what it sends and receives to how the video is displayed (default true).
@@ -133,8 +133,7 @@ const dec = new TextDecoder();
 
 /**
  * One 1:1 call. Create it from a credential minted by your backend, attach the video handles to
- * your views, and call `connect()`. See the SDK spec for the vocabulary; the engine underneath is
- * not part of this API.
+ * your views, and call `connect()`. The engine underneath is not part of this API.
  */
 export class Call {
   static create(credential: CallCredential, options: CallOptions = {}): Call {
