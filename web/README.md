@@ -152,6 +152,11 @@ custom source is published: switch cameras in the code that produces the track.
 `credentialExpired`, `roomFull`, `roomClosed`, `permissionDenied`, `deviceUnavailable`,
 `network`, `unsupported`, `internal`.
 
+A media server refuses a third participant by closing the websocket without a reason a
+browser can read. `connect()` then asks the server's validate endpoint whether the credential
+is still accepted; if it is, the rejection was capacity and the error is `roomFull`, otherwise
+it stays `network`. That is one extra request, on that failure path only.
+
 ## Profiles
 
 | Profile | Resolution | fps | Cap |

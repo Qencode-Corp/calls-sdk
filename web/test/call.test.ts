@@ -143,6 +143,25 @@ describe('Call lifecycle', () => {
     await expect(call.connect()).rejects.toMatchObject({ code: 'credentialInvalid' });
     expect(call.state).toBe('ended'); expect(call.endReason).toBe('credential'); expect(errors[0]?.code).toBe('credentialInvalid');
   });
+  it('a join refused with a bare websocket close is roomFull when validate still accepts the token', async () => {
+    const realFetch = globalThis.fetch;
+    const probe = vi.fn(async (url: string) => new Response(url.includes('/rtc/validate?access_token=') ? 'success' : 'no', { status: 200 }));
+    (globalThis as any).fetch = probe;
+    MockRoom.connectError = new ConnectionError('could not establish signal connection: Encountered websocket error during connection establishment', ConnectionErrorReason.WebSocket);
+    const full = Call.create(credential(), { telemetry: false });
+    await expect(full.connect()).rejects.toMatchObject({ code: 'roomFull' });
+    expect(full.endReason).toBe('roomFull');
+    expect(String(probe.mock.calls[0]![0])).toMatch(/^https:\/\/calls-eu\.example\.com\/rtc\/validate\?access_token=/);
+    // validate rejecting the token means it really was the network or the token, not capacity
+    (globalThis as any).fetch = vi.fn(async () => new Response('bad', { status: 401 }));
+    MockRoom.connectError = new ConnectionError('ws', ConnectionErrorReason.WebSocket);
+    await expect(Call.create(credential(), { telemetry: false }).connect()).rejects.toMatchObject({ code: 'network' });
+    // a timeout is not probed at all
+    (globalThis as any).fetch = vi.fn(async () => new Response('success', { status: 200 }));
+    MockRoom.connectError = new ConnectionError('slow', ConnectionErrorReason.Timeout);
+    await expect(Call.create(credential(), { telemetry: false }).connect()).rejects.toMatchObject({ code: 'network' });
+    globalThis.fetch = realFetch;
+  });
   it('a third human means roomFull, whether the server says so or the room already has two', async () => {
     MockRoom.connectError = new ConnectionError('room is full', ConnectionErrorReason.NotAllowed, 403);
     await expect(Call.create(credential(), { telemetry: false }).connect()).rejects.toMatchObject({ code: 'roomFull' });

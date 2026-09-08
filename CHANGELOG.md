@@ -18,6 +18,9 @@
   `processing_ms`, `abs_capture_ms` and `target_kbps` in `extra`.
 - `videoCodec`, `simulcast` and `regionProbe` getters.
 - `devices.setCamera` is refused with `unsupported` while a custom video source is published.
+- A join the media server refuses with a bare websocket close is reported as `roomFull`
+  when the server's validate endpoint still accepts the credential. Before, a third person
+  on a two-person call saw `network`.
 - `forceRelay` is documented.
 
 ## 0.1.0

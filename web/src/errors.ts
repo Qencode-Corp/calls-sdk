@@ -49,6 +49,8 @@ export function isCallError(e: unknown): e is CallError {
  * - message matches "room is full" / "max participants"        -> roomFull
  * - ConnectionError NotAllowed (HTTP 401/403 on join)            -> credentialInvalid
  * - ConnectionError ServerUnreachable / WebSocket / Timeout      -> network
+ *   (Call.connect() turns a WebSocket refusal into roomFull when the server's validate
+ *   endpoint still accepts the credential; the server sends no reason a browser can read)
  * - ConnectionError ServiceNotFound (wrong URL path)             -> credentialInvalid (the url in the credential is wrong)
  * - ConnectionError Cancelled / LeaveRequest                     -> internal, not retryable (connect() was abandoned by leave())
  * - ConnectionError InternalError                                -> internal

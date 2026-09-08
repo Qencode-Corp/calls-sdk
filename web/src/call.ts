@@ -2,7 +2,7 @@ import {
   Room, RoomEvent, ConnectionState, DisconnectReason, Track, setLogLevel,
   type RemoteParticipant, type RemoteTrack, type Participant, type TrackPublication,
   type RoomConnectOptions, type TrackPublishOptions, type VideoCaptureOptions, type AudioCaptureOptions,
-  type LocalVideoTrack, DataPacket_Kind } from 'livekit-client';
+  type LocalVideoTrack, DataPacket_Kind, ConnectionError, ConnectionErrorReason } from 'livekit-client';
 import { CallError, mapEngineError } from './errors';
 import { Emitter } from './events';
 import { parseCredential, isExpired, msUntilExpiryWarning, type CallCredential, type ParsedCredential } from './credential';
@@ -279,7 +279,8 @@ export class Call {
       this.telemetry.start(this.joinMs);
       this.sendHello();
     } catch (e) {
-      const err = mapEngineError(e);
+      let err = mapEngineError(e);
+      if (err.code === 'network' && await this.joinRefusedByServer(e)) err = new CallError('roomFull', 'The call already has two participants.', { cause: e });
       this.pendingEnd = this.pendingEnd ?? reasonForError(err);
       // End first so the error reaches listeners; the engine's Disconnected during teardown then finds the call already ended.
       this.finish(this.pendingEnd, err);
@@ -304,6 +305,31 @@ export class Call {
     }
     this.cred = next;
     if (this._state === 'connected' || this._state === 'reconnecting') this.scheduleExpiryWarning();
+  }
+
+  /**
+   * A media server refuses a join with a bare websocket close, and a browser never sees the
+   * reason. When the server's validate endpoint still accepts the very same credential, the
+   * refusal was not the token, the room or the network; on a two-person room it is capacity.
+   * One short request on the failure path only.
+   */
+  private async joinRefusedByServer(e: unknown): Promise<boolean> {
+    if (!(e instanceof ConnectionError)) return false;
+    if (e.reason !== ConnectionErrorReason.WebSocket && e.reason !== ConnectionErrorReason.InternalError) return false;
+    const region = this.regionChoice?.region;
+    if (!region || typeof fetch !== 'function') return false;
+    try {
+      const url = new URL(region.url);
+      url.protocol = url.protocol === 'ws:' || url.protocol === 'http:' ? 'http:' : 'https:';
+      url.pathname = `${url.pathname.replace(/\/+$/, '')}/rtc/validate`;
+      url.search = `access_token=${encodeURIComponent(this.cred.token)}`;
+      const ctl = typeof AbortController === 'function' ? new AbortController() : undefined;
+      const timer = setTimeout(() => ctl?.abort(), 3000);
+      try {
+        const r = await fetch(url.toString(), { cache: 'no-store', credentials: 'omit', signal: ctl?.signal });
+        return r.status === 200;
+      } finally { clearTimeout(timer); }
+    } catch { return false; }
   }
 
   // ------------------------------------------------------------------ media controls
