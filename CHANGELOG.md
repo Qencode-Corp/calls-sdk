@@ -13,6 +13,11 @@
   the track is next published, instead of being refused.
 - Fix: a profile switch after `setCamera` restarted capture on the initial camera. The
   selection now lives in `devices` and every restart uses it.
+- A chosen camera id is requested exactly. As a preference Chrome kept the camera it already
+  had when the other one took a moment to wake, as a phone used as a webcam does.
+- A camera that cannot be opened mid-call no longer leaves the call without video: the
+  previous camera is reopened and `deviceUnavailable` is thrown. A remembered camera that is
+  gone at `connect()` falls back to the default one instead of failing the call.
 
 ## 0.2.0 (2026-09-08)
 

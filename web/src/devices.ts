@@ -48,12 +48,19 @@ export class Devices {
   }
   /** @internal The call's capture options (profile resolution plus the selection below), used to restart the camera. */
   _setCaptureOptions(fn: () => VideoCaptureOptions): void { this.captureOptions = fn; }
-  /** @internal The camera selection part of the capture constraints. */
+  /**
+   * @internal The camera selection part of the capture constraints. A chosen id is exact: a
+   * preference lets the browser keep the camera it already has (Chrome does when the other one
+   * takes a moment to wake, as a phone used as a webcam does). A facing stays a preference so
+   * desktops, which cannot honour it, do not fail.
+   */
   _videoSelection(): Pick<VideoCaptureOptions, 'deviceId' | 'facingMode'> {
     if (this.facingWish) return { facingMode: this.facingWish };
-    if (this.cameraIdValue) return { deviceId: this.cameraIdValue };
+    if (this.cameraIdValue) return { deviceId: { exact: this.cameraIdValue } };
     return {};
   }
+  /** @internal The chosen camera could not be opened at publish time; fall back to the default one. */
+  _clearCamera(): void { this.cameraIdValue = null; this.facingWish = null; }
   /** @internal */
   _microphoneSelection(): string | undefined { return this.microphoneIdValue ?? undefined; }
   /** @internal Called by the call when the camera is (re)published or unmuted: applies a deferred choice and records what is in use. */
@@ -112,9 +119,7 @@ export class Devices {
   /** Use this camera: now when it is published and on, otherwise as soon as it is. */
   async setCamera(deviceId: string): Promise<void> {
     this.refuseIfCustomVideo();
-    this.cameraIdValue = deviceId;
-    this.facingWish = null;
-    await this.applyCamera();
+    await this.select(deviceId, null);
   }
 
   /**
@@ -125,18 +130,14 @@ export class Devices {
   async setCameraFacing(mode: CameraFacing): Promise<void> {
     if (mode !== 'user' && mode !== 'environment') throw new RangeError(`Unknown camera facing "${String(mode)}". Known: user, environment`);
     this.refuseIfCustomVideo();
-    this.facingWish = mode;
-    this.cameraIdValue = null;
-    const applied = await this.applyCamera();
+    const applied = await this.select(null, mode);
     if (!applied) return;                                   // takes effect when the camera is next published or unmuted
     if (this.trackSettings()?.facingMode === mode) return;  // the browser honoured the hint
     // The hint was ignored, as desktops do; fall back to a camera whose label says which way it points.
     const list = await this.list();
     const alt = list.cameras.find((c) => c.facing === mode);
     if (!alt) throw new CallError('deviceUnavailable', mode === 'user' ? 'No camera facing the user was found.' : 'No camera facing away from the user was found.');
-    this.cameraIdValue = alt.id;
-    this.facingWish = null;
-    await this.applyCamera();
+    await this.select(alt.id, null);
     this.facingWish = mode;                                 // remembered for `cameraFacing` where settings stay silent
   }
 
@@ -155,11 +156,26 @@ export class Devices {
 
   onChange(handler: (list: DeviceList) => void): () => void { return this.emitter.on('change', handler); }
 
-  /** Restarts the published, unmuted camera with the current selection. Returns false when that has to wait. */
-  private async applyCamera(): Promise<boolean> {
+  /**
+   * Records a selection and restarts the published, unmuted camera with it. Returns false when
+   * that has to wait. The engine stops the old capture before it opens the new one, so when the
+   * new camera cannot be opened the previous selection is put back and reopened, and the call
+   * keeps its picture; the failure is still thrown.
+   */
+  private async select(id: string | null, facing: CameraFacing | null): Promise<boolean> {
+    const prevId = this.cameraIdValue, prevFacing = this.facingWish;
+    this.cameraIdValue = id;
+    this.facingWish = facing;
     const track = this.cameraTrack();
     if (!track || track.isMuted || !this.captureOptions) { this.pending = true; return false; }
-    try { await track.restartTrack(this.captureOptions()); } catch (e) { throw mapEngineError(e); }
+    try {
+      await track.restartTrack(this.captureOptions());
+    } catch (e) {
+      this.cameraIdValue = prevId;
+      this.facingWish = prevFacing;
+      try { await track.restartTrack(this.captureOptions()); } catch { /* the previous camera is gone too */ }
+      throw mapEngineError(e);
+    }
     this.pending = false;
     this.syncFromTrack(track);
     return true;

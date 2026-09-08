@@ -14,7 +14,7 @@ const H = vi.hoisted(() => {
   const fakeTrack = (kind: 'video' | 'audio') => ({
     kind, receiver: { getStats: vi.fn(async () => new Map()) }, sender: { getStats: vi.fn(async () => new Map()), getParameters: () => ({ encodings: [{}] }), setParameters: vi.fn(async () => {}) },
     mediaStreamTrack: { kind, settings: {} as Record<string, unknown>, getSettings() { return this.settings; } }, attach: vi.fn((el?: any) => el), detach: vi.fn(), stop: vi.fn(), isMuted: false,
-    restartTrack: vi.fn(async function (this: any, opts: any) { const s = this.mediaStreamTrack.settings; if (opts?.deviceId) s.deviceId = opts.deviceId; if (opts?.facingMode && this.honourFacing) s.facingMode = opts.facingMode; }),
+    restartTrack: vi.fn(async function (this: any, opts: any) { const s = this.mediaStreamTrack.settings; const id = opts?.deviceId?.exact ?? opts?.deviceId; if (id === 'gone') throw Object.assign(new Error('no such camera'), { name: 'OverconstrainedError' }); if (id) s.deviceId = id; if (opts?.facingMode && this.honourFacing) s.facingMode = opts.facingMode; }),
   });
   class MockRoom extends Emitter {
     static instances: MockRoom[] = [];
@@ -35,7 +35,7 @@ const H = vi.hoisted(() => {
         identity: 'alice',
         getTrackPublication: (source: string) => self.pubs.get(source),
         setMicrophoneEnabled: vi.fn(async (enabled: boolean) => { if (enabled) { const pub = { track: fakeTrack('audio'), isMuted: false, kind: 'audio' }; self.pubs.set('microphone', pub); return pub; } const p = self.pubs.get('microphone'); if (p) p.isMuted = true; return p; }),
-        setCameraEnabled: vi.fn(async (enabled: boolean, capture?: any) => { if (enabled) { const pub = self.pubs.get('camera') ?? { track: fakeTrack('video'), isMuted: false, kind: 'video' }; pub.isMuted = false; pub.track.isMuted = false; if (capture?.deviceId) pub.track.mediaStreamTrack.settings.deviceId = capture.deviceId; self.pubs.set('camera', pub); return pub; } const p = self.pubs.get('camera'); if (p) { p.isMuted = true; p.track.isMuted = true; } return p; }),
+        setCameraEnabled: vi.fn(async (enabled: boolean, capture?: any) => { if (enabled) { const id = capture?.deviceId?.exact ?? capture?.deviceId; if (id === 'gone') throw Object.assign(new Error('no such camera'), { name: 'OverconstrainedError' }); const pub = self.pubs.get('camera') ?? { track: fakeTrack('video'), isMuted: false, kind: 'video' }; pub.isMuted = false; pub.track.isMuted = false; if (id) pub.track.mediaStreamTrack.settings.deviceId = id; self.pubs.set('camera', pub); return pub; } const p = self.pubs.get('camera'); if (p) { p.isMuted = true; p.track.isMuted = true; } return p; }),
         unpublishTrack: vi.fn(async (track: any, stop?: boolean) => { for (const [k, p] of self.pubs) if (p.track === track) self.pubs.delete(k); if (stop !== false) track.mediaStreamTrack?.stop?.(); }),
         publishTrack: vi.fn(async (mst: any, opts: any) => { const t = fakeTrack('video'); t.mediaStreamTrack = mst; const pub = { track: t, isMuted: false, kind: 'video', options: opts }; self.pubs.set(opts?.source ?? 'camera', pub); return pub; }),
         publishData: vi.fn(async () => {}),
@@ -361,13 +361,15 @@ describe('Devices', () => {
     expect(list.cameras).toEqual([{ id: 'c1', label: 'FaceTime HD Camera', facing: null }, { id: 'c2', label: 'camera2 0, facing back', facing: 'environment' }]); expect(list.microphones[0]!.label).toBe('microphone 3');
     const track = room.pubs.get('camera').track;
     await call.devices.setCamera('c2');
-    expect(track.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'c2', resolution: expect.objectContaining({ width: 960 }) }));
+    expect(track.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ deviceId: { exact: 'c2' }, resolution: expect.objectContaining({ width: 960 }) }));
     expect(call.devices.cameraId).toBe('c2');
     await call.setVideoProfile('p540_30');                      // a profile change keeps the chosen camera
-    expect(track.restartTrack).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: 'c2', resolution: expect.objectContaining({ frameRate: 30 }) }));
+    expect(track.restartTrack).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: { exact: 'c2' }, resolution: expect.objectContaining({ frameRate: 30 }) }));
     await call.devices.setMicrophone('m1'); expect(room.switchActiveDevice).toHaveBeenCalledWith('audioinput', 'm1', true);
-    track.restartTrack.mockRejectedValueOnce(Object.assign(new Error('gone'), { name: 'NotFoundError' }));
+    // a camera that cannot be opened: the failure is reported and the previous camera is reopened
     await expect(call.devices.setCamera('gone')).rejects.toMatchObject({ code: 'deviceUnavailable' });
+    expect(track.restartTrack).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: { exact: 'c2' } }));
+    expect(call.devices.cameraId).toBe('c2');
     await call.leave();
   });
   it('a camera chosen before connect or while the camera is off is used when it is next published', async () => {
@@ -376,7 +378,7 @@ describe('Devices', () => {
     await call.devices.setMicrophone('m9');
     await call.connect();
     const r = room();
-    expect(r.localParticipant.setCameraEnabled).toHaveBeenCalledWith(true, expect.objectContaining({ deviceId: 'c9' }), expect.anything());
+    expect(r.localParticipant.setCameraEnabled).toHaveBeenCalledWith(true, expect.objectContaining({ deviceId: { exact: 'c9' } }), expect.anything());
     expect(r.localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true, expect.objectContaining({ deviceId: 'm9' }), expect.anything());
     await call.setCameraEnabled(false);
     const track = r.pubs.get('camera').track;
@@ -384,8 +386,15 @@ describe('Devices', () => {
     await call.devices.setCamera('c10');
     expect(track.restartTrack).not.toHaveBeenCalled();           // deferred: the camera is off
     await call.setCameraEnabled(true);
-    expect(track.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'c10' }));
+    expect(track.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ deviceId: { exact: 'c10' } }));
     expect(call.devices.cameraId).toBe('c10');
+    await call.leave();
+  });
+  it('a remembered camera that is gone at connect falls back to the default one', async () => {
+    const { call, room } = await connected({ cameraId: 'gone' });
+    expect(room.localParticipant.setCameraEnabled).toHaveBeenCalledTimes(2);
+    expect(room.localParticipant.setCameraEnabled).toHaveBeenLastCalledWith(true, expect.not.objectContaining({ deviceId: expect.anything() }), expect.anything());
+    expect(call.localVideo).not.toBeNull(); expect(call.devices.cameraId).toBeNull();
     await call.leave();
   });
   it('setCameraFacing uses the browser hint on phones and a labelled camera elsewhere', async () => {
@@ -398,7 +407,7 @@ describe('Devices', () => {
     expect(call.devices.cameraFacing).toBe('environment');
     track.honourFacing = false; track.mediaStreamTrack.settings = {};  // a desktop: the hint is ignored
     await call.devices.setCameraFacing('user');
-    expect(track.restartTrack).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: 'front' }));
+    expect(track.restartTrack).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: { exact: 'front' } }));
     expect(call.devices.cameraId).toBe('front'); expect(call.devices.cameraFacing).toBe('user');
     installMediaDevices([{ deviceId: 'only', kind: 'videoinput', label: 'USB Camera' }]);
     await expect(call.devices.setCameraFacing('environment')).rejects.toMatchObject({ code: 'deviceUnavailable' });

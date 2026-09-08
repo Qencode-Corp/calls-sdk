@@ -492,7 +492,14 @@ export class Call {
         const pub = await room.localParticipant.publishTrack(source, { ...opts, source: Track.Source.Camera, name: 'camera' });
         track = pub?.track;
       } else {
-        const pub = await room.localParticipant.setCameraEnabled(true, this.captureOptions(), opts);
+        let pub;
+        try { pub = await room.localParticipant.setCameraEnabled(true, this.captureOptions(), opts); }
+        catch (e) {
+          // A remembered camera that is gone or busy must not fail the call: fall back to the default one once.
+          if (!this.devices.cameraId || mapEngineError(e).code !== 'deviceUnavailable') throw e;
+          this.devices._clearCamera();
+          pub = await room.localParticipant.setCameraEnabled(true, this.captureOptions(), opts);
+        }
         track = pub?.track;
         await this.devices._cameraPublished();
       }
