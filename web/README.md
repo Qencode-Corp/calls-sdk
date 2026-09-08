@@ -73,7 +73,7 @@ which is about 145 KB gzipped on its own.
 | `setJitterBufferTarget(ms)` | Pins the receiver's jitter buffer target regardless of the mode. Returns which property took it: `jitterBufferTarget`, `playoutDelayHint`, or `unsupported` (Firefox). |
 | `setVideoEncoding({ codec, simulcast })` | Switches codec or simulcast mid-call; the video track is republished. |
 | `setVideoSource(source \| null)` | Replaces the published video with a custom track or factory, or returns to the camera. See below. |
-| `devices` | `list()`, `setCamera(id)`, `setMicrophone(id)`, `setSpeaker(id)`, `onChange(handler)`, `canSelectSpeaker`. |
+| `devices` | `list()`, `setCamera(id)`, `setCameraFacing('user' \| 'environment')`, `setMicrophone(id)`, `setSpeaker(id)`, `cameraId`, `cameraFacing`, `microphoneId`, `onChange(handler)`, `canSelectSpeaker`. A choice made before `connect()` or while the camera is off is applied when the camera is next published. |
 | `sendMessage(payload, reliable = true)` | Up to 15 KB, 30 per second, to the peer. Strings and JSON objects arrive as sent, `Uint8Array` as bytes. |
 | `stats` | Latest quality snapshot, refreshed every second. |
 | `peer` | Identity, display name and mute state of the other human, or `null`. |
@@ -108,6 +108,22 @@ bench wants and what a customer UI rarely does.
 | `jitterBufferTargetMs` | per latency mode | Pin the receiver's jitter buffer target; `0` asks for the browser's floor. |
 | `telemetryExtra` | none | `(direction) => fields` appended to every telemetry row; see telemetry. |
 | `forceRelay` | `false` | Connect through TURN only, to measure the relay path. |
+
+### Switching cameras
+
+On a phone, flip between the front and the rear camera by direction rather than by id:
+
+```ts
+const facing = call.devices.cameraFacing;                       // 'user', 'environment', or null when unknown
+await call.devices.setCameraFacing(facing === 'user' ? 'environment' : 'user');
+self.toggleAttribute('mirror', call.devices.cameraFacing !== 'environment');   // mirror only a user-facing camera
+```
+
+Phone browsers honour the direction directly. Elsewhere the SDK falls back to a camera whose
+label says which way it points (`DeviceInfo.facing`, from labels such as "Back Camera" or
+"camera2 0, facing back") and throws `deviceUnavailable` when there is none; a desktop app
+then offers `devices.list().cameras` and calls `setCamera(id)`. Either way the profile's
+resolution is kept, and a later profile switch stays on the chosen camera.
 
 ### Custom video source
 

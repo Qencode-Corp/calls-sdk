@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+`@qencode/calls`
+
+- `devices.setCameraFacing('user' | 'environment')`: switch between the front and the rear
+  camera on phones by direction; on desktops a camera whose label says which way it points
+  is used, or `deviceUnavailable` is thrown.
+- `devices.cameraId`, `devices.cameraFacing`, `devices.microphoneId` getters, and
+  `DeviceInfo.facing` for cameras whose label gives the direction.
+- A camera or microphone chosen before `connect()` or while the camera is off is applied when
+  the track is next published, instead of being refused.
+- Fix: a profile switch after `setCamera` restarted capture on the initial camera. The
+  selection now lives in `devices` and every restart uses it.
+
 ## 0.2.0 (2026-09-08)
 
 `@qencode/calls`

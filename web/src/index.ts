@@ -10,7 +10,7 @@ export type { VideoProfileName, VideoProfile } from './profiles';
 export { LATENCY_SETTINGS, DEFAULT_LATENCY_MODE } from './latency';
 export type { LatencyMode, LatencySettings } from './latency';
 export type { CallStats, RecvStats, SendStats, Quality, Direction, Transport, CandidateType, AudioRoute } from './stats';
-export type { DeviceInfo, DeviceList } from './devices';
+export type { DeviceInfo, DeviceList, CameraFacing } from './devices';
 export type { VideoHandle } from './render';
 export { QencodeVideoElement, registerVideoElement } from './render';
 export { SDK_VERSION } from './version';

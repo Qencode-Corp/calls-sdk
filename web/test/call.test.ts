@@ -13,7 +13,8 @@ const H = vi.hoisted(() => {
   class ConnectionError extends Error { reason: number; status?: number; constructor(m: string, reason: number, status?: number) { super(m); this.reason = reason; this.status = status; this.name = 'ConnectionError'; } }
   const fakeTrack = (kind: 'video' | 'audio') => ({
     kind, receiver: { getStats: vi.fn(async () => new Map()) }, sender: { getStats: vi.fn(async () => new Map()), getParameters: () => ({ encodings: [{}] }), setParameters: vi.fn(async () => {}) },
-    mediaStreamTrack: { kind }, attach: vi.fn((el?: any) => el), detach: vi.fn(), restartTrack: vi.fn(async () => {}), stop: vi.fn(),
+    mediaStreamTrack: { kind, settings: {} as Record<string, unknown>, getSettings() { return this.settings; } }, attach: vi.fn((el?: any) => el), detach: vi.fn(), stop: vi.fn(), isMuted: false,
+    restartTrack: vi.fn(async function (this: any, opts: any) { const s = this.mediaStreamTrack.settings; if (opts?.deviceId) s.deviceId = opts.deviceId; if (opts?.facingMode && this.honourFacing) s.facingMode = opts.facingMode; }),
   });
   class MockRoom extends Emitter {
     static instances: MockRoom[] = [];
@@ -34,7 +35,7 @@ const H = vi.hoisted(() => {
         identity: 'alice',
         getTrackPublication: (source: string) => self.pubs.get(source),
         setMicrophoneEnabled: vi.fn(async (enabled: boolean) => { if (enabled) { const pub = { track: fakeTrack('audio'), isMuted: false, kind: 'audio' }; self.pubs.set('microphone', pub); return pub; } const p = self.pubs.get('microphone'); if (p) p.isMuted = true; return p; }),
-        setCameraEnabled: vi.fn(async (enabled: boolean) => { if (enabled) { const pub = self.pubs.get('camera') ?? { track: fakeTrack('video'), isMuted: false, kind: 'video' }; pub.isMuted = false; self.pubs.set('camera', pub); return pub; } const p = self.pubs.get('camera'); if (p) p.isMuted = true; return p; }),
+        setCameraEnabled: vi.fn(async (enabled: boolean, capture?: any) => { if (enabled) { const pub = self.pubs.get('camera') ?? { track: fakeTrack('video'), isMuted: false, kind: 'video' }; pub.isMuted = false; pub.track.isMuted = false; if (capture?.deviceId) pub.track.mediaStreamTrack.settings.deviceId = capture.deviceId; self.pubs.set('camera', pub); return pub; } const p = self.pubs.get('camera'); if (p) { p.isMuted = true; p.track.isMuted = true; } return p; }),
         unpublishTrack: vi.fn(async (track: any, stop?: boolean) => { for (const [k, p] of self.pubs) if (p.track === track) self.pubs.delete(k); if (stop !== false) track.mediaStreamTrack?.stop?.(); }),
         publishTrack: vi.fn(async (mst: any, opts: any) => { const t = fakeTrack('video'); t.mediaStreamTrack = mst; const pub = { track: t, isMuted: false, kind: 'video', options: opts }; self.pubs.set(opts?.source ?? 'camera', pub); return pub; }),
         publishData: vi.fn(async () => {}),
@@ -353,15 +354,55 @@ describe('Stats loop', () => {
 });
 
 describe('Devices', () => {
-  it('lists devices with labels or fallbacks and switches through the engine', async () => {
-    installMediaDevices([{ deviceId: 'c1', kind: 'videoinput', label: 'FaceTime' }, { deviceId: 'm1', kind: 'audioinput', label: '' }, { deviceId: 's1', kind: 'audiooutput', label: 'Speakers' }]);
+  it('lists devices with labels, fallbacks and a facing hint, and switches through the engine', async () => {
+    installMediaDevices([{ deviceId: 'c1', kind: 'videoinput', label: 'FaceTime HD Camera' }, { deviceId: 'c2', kind: 'videoinput', label: 'camera2 0, facing back' }, { deviceId: 'm1', kind: 'audioinput', label: '' }, { deviceId: 's1', kind: 'audiooutput', label: 'Speakers' }]);
     const { call, room } = await connected();
     const list = await call.devices.list();
-    expect(list.cameras).toEqual([{ id: 'c1', label: 'FaceTime' }]); expect(list.microphones[0]!.label).toBe('microphone 2');
-    await call.devices.setCamera('c1'); expect(room.switchActiveDevice).toHaveBeenCalledWith('videoinput', 'c1', true);
+    expect(list.cameras).toEqual([{ id: 'c1', label: 'FaceTime HD Camera', facing: null }, { id: 'c2', label: 'camera2 0, facing back', facing: 'environment' }]); expect(list.microphones[0]!.label).toBe('microphone 3');
+    const track = room.pubs.get('camera').track;
+    await call.devices.setCamera('c2');
+    expect(track.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'c2', resolution: expect.objectContaining({ width: 960 }) }));
+    expect(call.devices.cameraId).toBe('c2');
+    await call.setVideoProfile('p540_30');                      // a profile change keeps the chosen camera
+    expect(track.restartTrack).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: 'c2', resolution: expect.objectContaining({ frameRate: 30 }) }));
     await call.devices.setMicrophone('m1'); expect(room.switchActiveDevice).toHaveBeenCalledWith('audioinput', 'm1', true);
-    room.switchActiveDevice.mockResolvedValueOnce(false);
+    track.restartTrack.mockRejectedValueOnce(Object.assign(new Error('gone'), { name: 'NotFoundError' }));
     await expect(call.devices.setCamera('gone')).rejects.toMatchObject({ code: 'deviceUnavailable' });
+    await call.leave();
+  });
+  it('a camera chosen before connect or while the camera is off is used when it is next published', async () => {
+    const call = Call.create(credential(), { telemetry: false });
+    await call.devices.setCamera('c9');
+    await call.devices.setMicrophone('m9');
+    await call.connect();
+    const r = room();
+    expect(r.localParticipant.setCameraEnabled).toHaveBeenCalledWith(true, expect.objectContaining({ deviceId: 'c9' }), expect.anything());
+    expect(r.localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true, expect.objectContaining({ deviceId: 'm9' }), expect.anything());
+    await call.setCameraEnabled(false);
+    const track = r.pubs.get('camera').track;
+    track.restartTrack.mockClear();
+    await call.devices.setCamera('c10');
+    expect(track.restartTrack).not.toHaveBeenCalled();           // deferred: the camera is off
+    await call.setCameraEnabled(true);
+    expect(track.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'c10' }));
+    expect(call.devices.cameraId).toBe('c10');
+    await call.leave();
+  });
+  it('setCameraFacing uses the browser hint on phones and a labelled camera elsewhere', async () => {
+    installMediaDevices([{ deviceId: 'front', kind: 'videoinput', label: 'Front Camera' }, { deviceId: 'back', kind: 'videoinput', label: 'Back Camera' }]);
+    const { call, room } = await connected();
+    const track = room.pubs.get('camera').track;
+    track.honourFacing = true;                                   // a phone: the constraint picks the camera
+    await call.devices.setCameraFacing('environment');
+    expect(track.restartTrack).toHaveBeenLastCalledWith(expect.objectContaining({ facingMode: 'environment' }));
+    expect(call.devices.cameraFacing).toBe('environment');
+    track.honourFacing = false; track.mediaStreamTrack.settings = {};  // a desktop: the hint is ignored
+    await call.devices.setCameraFacing('user');
+    expect(track.restartTrack).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: 'front' }));
+    expect(call.devices.cameraId).toBe('front'); expect(call.devices.cameraFacing).toBe('user');
+    installMediaDevices([{ deviceId: 'only', kind: 'videoinput', label: 'USB Camera' }]);
+    await expect(call.devices.setCameraFacing('environment')).rejects.toMatchObject({ code: 'deviceUnavailable' });
+    await expect(call.devices.setCameraFacing('sideways' as any)).rejects.toThrow(/Unknown camera facing/);
     await call.leave();
   });
   it('speaker selection reports unsupported without setSinkId', async () => {

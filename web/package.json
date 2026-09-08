@@ -1,6 +1,6 @@
 {
   "name": "@qencode/calls",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Qencode Calls web SDK: low-latency 1:1 audio and video calls inside your own UI.",
   "license": "Apache-2.0",
   "type": "module",

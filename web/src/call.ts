@@ -207,6 +207,8 @@ export class Call {
     this.jbOverride = options.jitterBufferTargetMs === undefined ? null : checkJitterTarget(options.jitterBufferTargetMs);
     this.videoSource = options.videoSource ?? null;
     this.devices._setCustomVideo(this.videoSource !== null);
+    this.devices._setInitial(options.cameraId, options.microphoneId);
+    this.devices._setCaptureOptions(() => this.captureOptions());
     try { setLogLevel(this.options.logLevel); } catch { /* logger unavailable in this build */ }
   }
 
@@ -347,7 +349,7 @@ export class Call {
       if (enabled) {
         if (!this.profile.video) this.profile = resolveProfile(DEFAULT_PROFILE);
         if (!room.localParticipant.getTrackPublication(Track.Source.Camera)) await this.publishVideo();
-        else await room.localParticipant.setCameraEnabled(true);
+        else { await room.localParticipant.setCameraEnabled(true); if (!this.videoSource) await this.devices._cameraPublished(); }
       } else {
         await room.localParticipant.setCameraEnabled(false);
       }
@@ -464,13 +466,14 @@ export class Call {
     };
   }
 
+  /** Profile resolution plus the camera the devices object currently selects (an id, a facing, or the default). */
   private captureOptions(): VideoCaptureOptions {
     const p = this.profile.video ? this.profile : resolveProfile(DEFAULT_PROFILE);
-    return { resolution: { width: p.width, height: p.height, frameRate: p.fps, aspectRatio: p.width / p.height }, deviceId: this.options.cameraId };
+    return { resolution: { width: p.width, height: p.height, frameRate: p.fps, aspectRatio: p.width / p.height }, ...this.devices._videoSelection() };
   }
 
   private audioCaptureOptions(): AudioCaptureOptions {
-    return { echoCancellation: true, noiseSuppression: true, autoGainControl: true, deviceId: this.options.microphoneId };
+    return { echoCancellation: true, noiseSuppression: true, autoGainControl: true, deviceId: this.devices._microphoneSelection() };
   }
 
   private async publishAudio(): Promise<void> {
@@ -491,6 +494,7 @@ export class Call {
       } else {
         const pub = await room.localParticipant.setCameraEnabled(true, this.captureOptions(), opts);
         track = pub?.track;
+        await this.devices._cameraPublished();
       }
       this._localVideo = track ? wrapTrack(track as Parameters<typeof wrapTrack>[0]) : null;
     } catch (e) { this.releaseSource(); throw mapEngineError(e); }
