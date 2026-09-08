@@ -68,3 +68,7 @@ round trip to the media node, jitter buffer, encode and decode times, frame rate
 loss, freezes, transport (`udp`, `tcp`, `relay-udp`, `relay-tcp`), codec, region and node.
 Nothing identifying the user is sent; the identity is your opaque string. Turn it off per
 call with the `telemetry` option.
+
+Three optional columns are reserved for an app's own measured glass-to-glass latency over its
+window, in milliseconds: `g2g_p50`, `g2g_p95` and `g2g_samples`. The SDK fills them from the
+`telemetryExtra` option when the app supplies them; any other app field is kept in `extra`.

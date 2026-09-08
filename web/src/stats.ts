@@ -22,6 +22,14 @@ export interface RecvStats {
   jitterMs: number | null;
   freezes: number | null;
   freezeMs: number | null;
+  /** Receive-to-render time per frame: Δ`totalProcessingDelay` / Δ`framesDecoded`. */
+  processingMs: number | null;
+  /**
+   * Sender capture to local now through the abs-capture-time header extension, when the
+   * browser and the media node carry it (Chromium; null elsewhere). A cross-check for the
+   * estimate, not a substitute for a measured glass-to-glass number.
+   */
+  absCaptureLatencyMs: number | null;
   codec: string | null;
   transport: Transport | null;
   candidateType: CandidateType | null;
@@ -35,6 +43,8 @@ export interface SendStats {
   width: number | null;
   height: number | null;
   kbps: number | null;
+  /** The encoder's current bitrate target, kbps. */
+  targetKbps: number | null;
   qualityLimitation: string | null;
   /** Loss the media node reports for our outbound stream (remote-inbound-rtp), percent. */
   lossPct: number | null;
@@ -113,11 +123,11 @@ export function collectRecv(report: StatsLike, tracker: DeltaTracker, nowMs: num
   report.forEach((s) => { if (s.type === 'inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) inbound = s; });
   const pair = pickSelectedPair(report);
   const t = transportOf(report, pair);
-  const empty: RecvStats = { rttMs: t.rttMs, jitterBufferMs: null, decodeMs: null, fps: null, width: null, height: null, kbps: null, lossPct: null, jitterMs: null, freezes: null, freezeMs: null, codec: null, transport: t.transport, candidateType: t.candidateType };
+  const empty: RecvStats = { rttMs: t.rttMs, jitterBufferMs: null, decodeMs: null, fps: null, width: null, height: null, kbps: null, lossPct: null, jitterMs: null, freezes: null, freezeMs: null, processingMs: null, absCaptureLatencyMs: null, codec: null, transport: t.transport, candidateType: t.candidateType };
   if (!inbound) return empty;
   const step = tracker.step(nowMs, {
     jbd: inbound.jitterBufferDelay, jbc: inbound.jitterBufferEmittedCount,
-    dec: inbound.totalDecodeTime, frames: inbound.framesDecoded,
+    dec: inbound.totalDecodeTime, frames: inbound.framesDecoded, proc: inbound.totalProcessingDelay,
     lost: inbound.packetsLost, recv: inbound.packetsReceived, bytes: inbound.bytesReceived,
     freezes: inbound.freezeCount, freezeMs: inbound.totalFreezesDuration,
   });
@@ -131,6 +141,7 @@ export function collectRecv(report: StatsLike, tracker: DeltaTracker, nowMs: num
   const { dt, d } = step;
   out.jitterBufferMs = d('jbc') > 0 ? round1((d('jbd') / d('jbc')) * 1000) : null;
   out.decodeMs = d('frames') > 0 ? round1((d('dec') / d('frames')) * 1000) : null;
+  out.processingMs = d('frames') > 0 ? round1((d('proc') / d('frames')) * 1000) : null;
   const lostAndRecv = d('lost') + d('recv');
   out.lossPct = lostAndRecv > 0 ? round1((d('lost') / lostAndRecv) * 100) : 0;
   out.kbps = round1((d('bytes') * 8) / dt / 1000);
@@ -147,12 +158,13 @@ export function collectSend(report: StatsLike, tracker: DeltaTracker, nowMs: num
   let remoteInbound: any = null;
   report.forEach((s) => { if (s.type === 'remote-inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) remoteInbound = s; });
   const lossPct = remoteInbound && typeof remoteInbound.fractionLost === 'number' ? round1(remoteInbound.fractionLost * 100) : null;
-  const empty: SendStats = { rttMs: t.rttMs, encodeMs: null, fps: null, width: null, height: null, kbps: null, qualityLimitation: null, lossPct, codec: null, transport: t.transport, candidateType: t.candidateType };
+  const empty: SendStats = { rttMs: t.rttMs, encodeMs: null, fps: null, width: null, height: null, kbps: null, targetKbps: null, qualityLimitation: null, lossPct, codec: null, transport: t.transport, candidateType: t.candidateType };
   if (!outbound) return empty;
   const step = tracker.step(nowMs, { enc: outbound.totalEncodeTime, frames: outbound.framesEncoded, bytes: outbound.bytesSent });
   const out: SendStats = { ...empty,
     fps: typeof outbound.framesPerSecond === 'number' ? round1(outbound.framesPerSecond) : null,
     width: outbound.frameWidth ?? null, height: outbound.frameHeight ?? null,
+    targetKbps: typeof outbound.targetBitrate === 'number' ? round1(outbound.targetBitrate / 1000) : null,
     qualityLimitation: outbound.qualityLimitationReason ?? null,
     codec: codecName(report, outbound.codecId),
   };
@@ -161,6 +173,26 @@ export function collectSend(report: StatsLike, tracker: DeltaTracker, nowMs: num
   out.encodeMs = d('frames') > 0 ? round1((d('enc') / d('frames')) * 1000) : null;
   out.kbps = round1((d('bytes') * 8) / dt / 1000);
   return out;
+}
+
+const NTP_EPOCH_OFFSET_MS = 2_208_988_800_000; // 1900-01-01 to 1970-01-01
+
+type SyncSource = { timestamp: number; captureTimestamp?: number; senderCaptureTimeOffset?: number };
+
+/**
+ * Latency from the sender's capture clock to now, from `RTCRtpReceiver.getSynchronizationSources()`
+ * when the abs-capture-time extension is present. `captureTimestamp` and `senderCaptureTimeOffset`
+ * are milliseconds since the NTP epoch on the sender's clock (already offset-corrected by the
+ * browser); `timestamp` is when the last frame reached the track, relative either to the epoch
+ * (spec) or to the page's time origin (some builds), so both are accepted. Null when absent.
+ */
+export function absCaptureLatency(sources: ArrayLike<SyncSource> | null | undefined, unixNowMs: number, perfNowMs: number): number | null {
+  const s0 = sources && sources.length ? sources[0] : undefined;
+  if (!s0 || typeof s0.captureTimestamp !== 'number' || typeof s0.senderCaptureTimeOffset !== 'number') return null;
+  const captureNtp = s0.captureTimestamp + s0.senderCaptureTimeOffset;
+  const ageMs = typeof s0.timestamp === 'number' ? (s0.timestamp > 1e12 ? unixNowMs - s0.timestamp : perfNowMs - s0.timestamp) : 0;
+  const v = unixNowMs + NTP_EPOCH_OFFSET_MS - captureNtp - Math.max(0, ageMs);
+  return Number.isFinite(v) ? Math.round(v) : null;
 }
 
 /** rtt/2 + peerRtt/2 + jitter buffer + decode + one frame interval. Null until the pieces exist. */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DeltaTracker, collectRecv, collectSend, pickSelectedPair, transportOf, estimateLatency, QualityTracker } from '../src/stats';
+import { DeltaTracker, collectRecv, collectSend, pickSelectedPair, transportOf, estimateLatency, QualityTracker, absCaptureLatency } from '../src/stats';
 import { report } from './helpers';
 
 const pairReport = (local: Record<string, unknown>, rtt = 0.02) => [
@@ -27,7 +27,7 @@ describe('transport', () => {
 
 describe('collectRecv', () => {
   const inbound = (t: number) => ({ id: 'I', type: 'inbound-rtp', kind: 'video', codecId: 'C', framesPerSecond: 58, frameWidth: 960, frameHeight: 540, jitter: 0.004,
-    jitterBufferDelay: 2.0 * t, jitterBufferEmittedCount: 50 * t, totalDecodeTime: 0.05 * t, framesDecoded: 50 * t,
+    jitterBufferDelay: 2.0 * t, jitterBufferEmittedCount: 50 * t, totalDecodeTime: 0.05 * t, framesDecoded: 50 * t, totalProcessingDelay: 2.5 * t,
     packetsLost: 1 * t, packetsReceived: 99 * t, bytesReceived: 125_000 * t, freezeCount: 1 * t, totalFreezesDuration: 0.2 * t });
   it('returns static fields on the first poll and deltas from the second', () => {
     const tr = new DeltaTracker();
@@ -37,6 +37,8 @@ describe('collectRecv', () => {
     const second = collectRecv(report([...pairReport({ candidateType: 'srflx', protocol: 'udp' }), inbound(2)]), tr, 2000);
     expect(second.jitterBufferMs).toBe(40);      // 2.0 s / 50 frames
     expect(second.decodeMs).toBe(1);             // 0.05 s / 50 frames
+    expect(second.processingMs).toBe(50);        // 2.5 s / 50 frames
+    expect(first.absCaptureLatencyMs).toBeNull(); // filled by the call from the receiver's sync sources
     expect(second.lossPct).toBe(1);              // 1 / (1 + 99)
     expect(second.kbps).toBe(1000);              // 125 000 B * 8 / 1 s
     expect(second.freezes).toBe(1); expect(second.freezeMs).toBe(200);
@@ -49,12 +51,29 @@ describe('collectRecv', () => {
 });
 
 describe('collectSend', () => {
-  const outbound = (t: number) => ({ id: 'O', type: 'outbound-rtp', kind: 'video', codecId: 'C', framesPerSecond: 60, frameWidth: 960, frameHeight: 540, qualityLimitationReason: 'none', totalEncodeTime: 0.06 * t, framesEncoded: 60 * t, bytesSent: 150_000 * t });
+  const outbound = (t: number) => ({ id: 'O', type: 'outbound-rtp', kind: 'video', codecId: 'C', framesPerSecond: 60, frameWidth: 960, frameHeight: 540, qualityLimitationReason: 'none', totalEncodeTime: 0.06 * t, framesEncoded: 60 * t, bytesSent: 150_000 * t, targetBitrate: 1_150_000 });
   it('computes encode time and bitrate and reads remote loss', () => {
     const tr = new DeltaTracker();
     collectSend(report([...pairReport({ candidateType: 'srflx', protocol: 'udp' }), outbound(1)]), tr, 1000);
     const s = collectSend(report([...pairReport({ candidateType: 'srflx', protocol: 'udp' }), outbound(2), { id: 'R', type: 'remote-inbound-rtp', kind: 'video', fractionLost: 0.02 }]), tr, 2000);
     expect(s.encodeMs).toBe(1); expect(s.kbps).toBe(1200); expect(s.lossPct).toBe(2); expect(s.qualityLimitation).toBe('none'); expect(s.codec).toBe('H264');
+    expect(s.targetKbps).toBe(1150);
+  });
+});
+
+describe('absCaptureLatency', () => {
+  const NTP = 2_208_988_800_000;
+  it('subtracts the sender capture time and the sample age, with an epoch or a time-origin timestamp', () => {
+    const now = 1_800_000_000_000, perf = 5000;
+    // captured 120 ms ago on the sender clock (offset already folded in), sample delivered 20 ms ago
+    const capture = now + NTP - 120;
+    expect(absCaptureLatency([{ timestamp: now - 20, captureTimestamp: capture - 7, senderCaptureTimeOffset: 7 }], now, perf)).toBe(100);
+    expect(absCaptureLatency([{ timestamp: perf - 20, captureTimestamp: capture, senderCaptureTimeOffset: 0 }], now, perf)).toBe(100);
+  });
+  it('is null without the extension or without sources', () => {
+    expect(absCaptureLatency([{ timestamp: 1 }], 2, 3)).toBeNull();
+    expect(absCaptureLatency([], 2, 3)).toBeNull();
+    expect(absCaptureLatency(undefined, 2, 3)).toBeNull();
   });
 });
 

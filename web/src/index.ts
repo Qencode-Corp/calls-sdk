@@ -1,5 +1,7 @@
 export { Call, encodeMessage, decodeMessage } from './call';
-export type { CallOptions, CallEvents, CallState, EndReason, Peer, MessagePayload, ModerationEvent, LogLevelName } from './call';
+export type { CallOptions, CallEvents, CallState, EndReason, Peer, MessagePayload, ModerationEvent, LogLevelName, VideoCodec, VideoSource, VideoSourceFactory, JitterBufferSupport, TelemetryExtra } from './call';
+export { VIDEO_CODECS } from './call';
+export type { TelemetryFields } from './telemetry';
 export { CallError, isCallError } from './errors';
 export type { CallErrorCode } from './errors';
 export type { CallCredential, Region } from './credential';

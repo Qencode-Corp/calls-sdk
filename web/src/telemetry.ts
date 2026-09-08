@@ -1,10 +1,18 @@
 import type { CallStats, Direction } from './stats';
 
+/** App-supplied fields for one telemetry row; see `Telemetry.push`. */
+export type TelemetryFields = Record<string, unknown>;
+
+/** Contract columns an app may fill: its own measured glass-to-glass latency over the last window. */
+export const MEASURED_COLUMNS: ReadonlySet<string> = new Set(['g2g_p50', 'g2g_p95', 'g2g_samples']);
+
 /** One row of the calls stats contract (`POST /v1/calls/{id}/stats`). */
 export interface TelemetrySample {
   ts: number;
   direction: Direction;
   peer_identity?: string | null;
+  /** App-measured glass-to-glass latency, ms, over the app's own window; the SDK never fills these. */
+  g2g_p50?: number | null; g2g_p95?: number | null; g2g_samples?: number | null;
   rtt_ms?: number | null; net_one_way_ms?: number | null;
   jb_ms?: number | null; decode_ms?: number | null; encode_ms?: number | null;
   fps?: number | null; kbps?: number | null; loss_pct?: number | null; jitter_ms?: number | null;
@@ -51,21 +59,25 @@ export class Telemetry {
     this.timer = setInterval(() => { void this.flush(); }, this.opts.intervalMs ?? 5000);
   }
 
-  /** Converts one snapshot into the two contract rows and queues them. */
-  push(s: CallStats, peerIdentity: string | null): void {
+  /**
+   * Converts one snapshot into the two contract rows and queues them. `extra` adds app fields per
+   * direction: the measured-latency columns (`MEASURED_COLUMNS`) are stored as columns, anything
+   * else goes under `extra` next to the SDK's own keys, which win on a name clash.
+   */
+  push(s: CallStats, peerIdentity: string | null, extra?: { recv?: TelemetryFields | null; send?: TelemetryFields | null }): void {
     if (!this.enabled) return;
     const common = { ts: s.ts, peer_identity: peerIdentity, server_region: s.region, server_version: s.serverVersion, node_id: s.nodeId };
     const oneWay = s.recv.rttMs !== null ? Math.round(((s.recv.rttMs + (s.peerRttMs ?? s.recv.rttMs)) / 2) * 10) / 10 : null;
-    this.queue.push({ ...common, direction: 'recv',
+    this.queue.push(withFields({ ...common, direction: 'recv',
       rtt_ms: s.recv.rttMs, net_one_way_ms: oneWay, jb_ms: s.recv.jitterBufferMs, decode_ms: s.recv.decodeMs,
       fps: s.recv.fps, kbps: s.recv.kbps, loss_pct: s.recv.lossPct, jitter_ms: s.recv.jitterMs,
       freezes: s.recv.freezes, freeze_ms: s.recv.freezeMs, transport: s.recv.transport, candidate_type: s.recv.candidateType,
       codec: s.recv.codec, width: s.recv.width, height: s.recv.height,
-      extra: { estimated_latency_ms: s.estimatedLatencyMs, quality: s.quality.recv, audio_route: s.audioRoute } });
-    this.queue.push({ ...common, direction: 'send',
+      extra: { estimated_latency_ms: s.estimatedLatencyMs, abs_capture_ms: s.recv.absCaptureLatencyMs, processing_ms: s.recv.processingMs, quality: s.quality.recv, audio_route: s.audioRoute } }, extra?.recv));
+    this.queue.push(withFields({ ...common, direction: 'send',
       rtt_ms: s.send.rttMs, encode_ms: s.send.encodeMs, fps: s.send.fps, kbps: s.send.kbps,
       transport: s.send.transport, candidate_type: s.send.candidateType, codec: s.send.codec, width: s.send.width, height: s.send.height,
-      extra: { quality_limitation: s.send.qualityLimitation, quality: s.quality.send } });
+      extra: { quality_limitation: s.send.qualityLimitation, target_kbps: s.send.targetKbps, quality: s.quality.send } }, extra?.send));
     if (this.queue.length > 120) this.queue.splice(0, this.queue.length - 120);
   }
 
@@ -95,4 +107,15 @@ export class Telemetry {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     await this.flush();
   }
+}
+
+function withFields(row: TelemetrySample, fields: TelemetryFields | null | undefined): TelemetrySample {
+  if (!fields || typeof fields !== 'object') return row;
+  const extra: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (MEASURED_COLUMNS.has(k)) (row as unknown as Record<string, unknown>)[k] = typeof v === 'number' && Number.isFinite(v) ? v : null;
+    else extra[k] = v;
+  }
+  row.extra = { ...extra, ...(row.extra ?? {}) };
+  return row;
 }

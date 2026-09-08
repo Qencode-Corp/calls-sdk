@@ -9,8 +9,8 @@ import { parseCredential, isExpired, msUntilExpiryWarning, type CallCredential, 
 import { resolveProfile, DEFAULT_PROFILE, AUDIO_BITRATE, type VideoProfileName, type VideoProfile } from './profiles';
 import { latencySettings, applyJitterBufferTarget, applyDegradationPreference, DEFAULT_LATENCY_MODE, type LatencyMode } from './latency';
 import { chooseRegion, type RegionChoice } from './regions';
-import { DeltaTracker, QualityTracker, collectRecv, collectSend, estimateLatency, type CallStats, type Quality, type Direction, type AudioRoute } from './stats';
-import { Telemetry } from './telemetry';
+import { DeltaTracker, QualityTracker, collectRecv, collectSend, estimateLatency, absCaptureLatency, type CallStats, type Quality, type Direction, type AudioRoute } from './stats';
+import { Telemetry, type TelemetryFields } from './telemetry';
 import { Devices, type DeviceList } from './devices';
 import { wrapTrack, type VideoHandle } from './render';
 import { SDK_VERSION } from './version';
@@ -30,6 +30,27 @@ export interface Peer {
 export type MessagePayload = string | Uint8Array | Record<string, unknown> | unknown[];
 
 export interface ModerationEvent { level: 'warn' | 'mute' | 'end'; classes: string[]; at: number }
+
+/** Video codecs an app may ask for. H.264 is the default; the engine negotiates VP8 when a peer cannot decode the choice. */
+export type VideoCodec = 'h264' | 'vp8' | 'vp9' | 'av1';
+export const VIDEO_CODECS: readonly VideoCodec[] = Object.freeze(['h264', 'vp8', 'vp9', 'av1']);
+
+/**
+ * Builds the video track to publish for a profile: size a canvas, open a screen, wrap a processed
+ * camera. Called on every publish and republish, so a profile switch reaches it with the new size.
+ */
+export type VideoSourceFactory = (profile: VideoProfile) => MediaStreamTrack | Promise<MediaStreamTrack>;
+export type VideoSource = MediaStreamTrack | VideoSourceFactory;
+
+/** Which receiver property took the jitter buffer target; null before the first remote video track. */
+export type JitterBufferSupport = 'jitterBufferTarget' | 'playoutDelayHint' | 'unsupported' | null;
+
+/**
+ * App fields for every telemetry row, called once per row with its direction. `g2g_p50`, `g2g_p95`
+ * and `g2g_samples` (the app's own measured glass-to-glass latency, ms) are stored as columns;
+ * every other key lands in the row's `extra` object.
+ */
+export type TelemetryExtra = (direction: Direction) => TelemetryFields | null | undefined;
 
 export interface CallOptions {
   /** Publish the microphone on connect. Default true. */
@@ -62,9 +83,26 @@ export interface CallOptions {
    * receive and send the full profile regardless of visibility, as a measurement bench does.
    */
   adaptiveStream?: boolean;
-  /** @internal Forces TURN relay; for the bake-off bench and tests. */
+  /**
+   * Publish this track instead of opening the camera: a canvas, a screen, a processed camera. A
+   * factory is called with the profile on every publish and republish. The SDK stops a track a
+   * factory returned when it is replaced or the call ends; a track passed directly stays yours to
+   * stop. `devices.setCamera` does not apply while a custom source is published.
+   */
+  videoSource?: VideoSource;
+  /** Video codec to publish. Default `h264`. */
+  codec?: VideoCodec;
+  /** Override the profile's simulcast setting. Default follows the profile. */
+  simulcast?: boolean;
+  /** Jitter buffer target in ms, overriding the latency mode's. `setLatencyMode` clears it. */
+  jitterBufferTargetMs?: number;
+  /** Fields appended to every telemetry row. */
+  telemetryExtra?: TelemetryExtra;
+  /** Forces TURN relay, for measuring the relay path. */
   forceRelay?: boolean;
 }
+
+type OptionalKey = 'cameraId' | 'microphoneId' | 'region' | 'forceRelay' | 'videoSource' | 'simulcast' | 'jitterBufferTargetMs' | 'telemetryExtra';
 
 export type CallEvents = {
   stateChanged: [CallState, EndReason | null];
@@ -104,7 +142,7 @@ export class Call {
   }
 
   readonly devices = new Devices();
-  readonly options: Readonly<Required<Omit<CallOptions, 'cameraId' | 'microphoneId' | 'region' | 'forceRelay'>> & Pick<CallOptions, 'cameraId' | 'microphoneId' | 'region' | 'forceRelay'>>;
+  readonly options: Readonly<Required<Omit<CallOptions, OptionalKey>> & Pick<CallOptions, OptionalKey>>;
 
   private readonly emitter = new Emitter<CallEvents>();
   private cred: ParsedCredential;
@@ -113,6 +151,14 @@ export class Call {
   private room: Room | null = null;
   private profile: VideoProfile;
   private latency: LatencyMode;
+  private _codec: VideoCodec;
+  private simulcastOverride: boolean | null;
+  private jbOverride: number | null;
+  private jbSupport: JitterBufferSupport = null;
+  private videoSource: VideoSource | null;
+  /** The MediaStreamTrack currently published from `videoSource`, and whether a factory made it (then the SDK stops it). */
+  private sourceTrack: MediaStreamTrack | null = null;
+  private sourceOwned = false;
   private regionChoice: RegionChoice | null = null;
   private _peer: Peer | null = null;
   private agentPresent = false;
@@ -150,11 +196,18 @@ export class Call {
       apiBase: options.apiBase ?? cred.apiBase ?? DEFAULT_API_BASE,
       endOnPeerLeft: options.endOnPeerLeft ?? true,
       adaptiveStream: options.adaptiveStream ?? true,
+      codec: options.codec ?? 'h264',
       cameraId: options.cameraId, microphoneId: options.microphoneId, region: options.region ?? null, forceRelay: options.forceRelay,
+      videoSource: options.videoSource, simulcast: options.simulcast, jitterBufferTargetMs: options.jitterBufferTargetMs, telemetryExtra: options.telemetryExtra,
     });
     this.profile = resolveProfile(this.options.videoProfile);
     this.latency = this.options.latencyMode;
     latencySettings(this.latency); // validates
+    this._codec = checkCodec(this.options.codec);
+    this.simulcastOverride = typeof options.simulcast === 'boolean' ? options.simulcast : null;
+    this.jbOverride = options.jitterBufferTargetMs === undefined ? null : checkJitterTarget(options.jitterBufferTargetMs);
+    this.videoSource = options.videoSource ?? null;
+    this.devices._setCustomVideo(this.videoSource !== null);
     try { setLogLevel(this.options.logLevel); } catch { /* logger unavailable in this build */ }
   }
 
@@ -169,6 +222,14 @@ export class Call {
   get stats(): CallStats | null { return this._stats; }
   get videoProfile(): VideoProfileName { return this.profile.name; }
   get latencyMode(): LatencyMode { return this.latency; }
+  get videoCodec(): VideoCodec { return this._codec; }
+  /** Whether video is published with simulcast layers: the override when set, else the profile's setting. */
+  get simulcast(): boolean { return this.simulcastOverride ?? this.profile.simulcast; }
+  /** The jitter buffer target in force: the override when set, else the latency mode's. */
+  get jitterBufferTargetMs(): number { return this.jbOverride ?? latencySettings(this.latency).jitterBufferTargetMs; }
+  get jitterBufferSupport(): JitterBufferSupport { return this.jbSupport; }
+  /** Region probe results in ms by name, or null when no probe ran (one region, or a pinned one). */
+  get regionProbe(): Record<string, number> | null { const p = this.regionChoice?.probe; return p && Object.keys(p).length ? { ...p } : null; }
   get identity(): string { return this.cred.identity; }
   get callId(): string | null { return this.cred.callId; }
   get region(): string | null { return this.regionChoice?.region.name ?? null; }
@@ -268,7 +329,11 @@ export class Call {
     } catch (e) { throw mapEngineError(e); }
   }
 
-  /** Switch resolution, frame rate and bitrate cap mid-call. Simulcast changes republish the track; others restart capture in place. */
+  /**
+   * Switch resolution, frame rate and bitrate cap mid-call. A simulcast change or a factory video
+   * source republishes the track; a camera restarts capture in place; a fixed custom track only
+   * gets the new encoding parameters.
+   */
   async setVideoProfile(name: VideoProfileName): Promise<void> {
     const next = resolveProfile(name);
     const prev = this.profile;
@@ -277,31 +342,50 @@ export class Call {
     if (!room || this._state === 'ended') return;
     try {
       const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
-      if (!next.video) { if (pub?.track) await room.localParticipant.unpublishTrack(pub.track, true); this._localVideo = null; return; }
+      if (!next.video) { await this.unpublishVideo(); return; }
       if (!pub?.track) { await this.publishVideo(); return; }
-      if (prev.simulcast !== next.simulcast) {
-        await room.localParticipant.unpublishTrack(pub.track, true);
-        await this.publishVideo();
-        return;
-      }
+      const simulcastChanged = (this.simulcastOverride ?? prev.simulcast) !== (this.simulcastOverride ?? next.simulcast);
+      if (simulcastChanged || typeof this.videoSource === 'function') { await this.republishVideo(); return; }
       const track = pub.track as LocalVideoTrack;
-      await track.restartTrack(this.captureOptions());
-      const sender = track.sender;
-      if (sender) {
-        const params = sender.getParameters();
-        params.encodings = (params.encodings && params.encodings.length ? params.encodings : [{}]).map((e) => ({ ...e, maxBitrate: next.maxBitrate, maxFramerate: next.fps }));
-        await sender.setParameters(params);
-      }
+      if (!this.videoSource) await track.restartTrack(this.captureOptions());
+      await this.applyEncoding(track.sender, next);
     } catch (e) { throw mapEngineError(e); }
   }
 
   async setLatencyMode(mode: LatencyMode): Promise<void> {
     const s = latencySettings(mode);
     this.latency = mode;
-    if (this.remoteVideoTrack?.receiver) applyJitterBufferTarget(this.remoteVideoTrack.receiver, s.jitterBufferTargetMs);
+    this.jbOverride = null;
+    this.applyJitterTarget();
     const pub = this.room?.localParticipant.getTrackPublication(Track.Source.Camera);
     const sender = (pub?.track as LocalVideoTrack | undefined)?.sender;
     if (sender) await applyDegradationPreference(sender, s.degradationPreference);
+  }
+
+  /**
+   * Pin the receiver's jitter buffer target in ms regardless of the latency mode (0 asks the
+   * browser for its floor). Returns which receiver property took it; `unsupported` on Firefox.
+   * `setLatencyMode` clears the pin.
+   */
+  setJitterBufferTarget(ms: number): JitterBufferSupport {
+    this.jbOverride = checkJitterTarget(ms);
+    return this.applyJitterTarget();
+  }
+
+  /** Change the codec or the simulcast setting mid-call; the video track is republished. */
+  async setVideoEncoding(opts: { codec?: VideoCodec; simulcast?: boolean | null }): Promise<void> {
+    if (opts.codec !== undefined) this._codec = checkCodec(opts.codec);
+    if (opts.simulcast !== undefined) this.simulcastOverride = opts.simulcast;
+    if (!this.room || this._state === 'ended') return;
+    try { await this.republishVideo(); } catch (e) { throw mapEngineError(e); }
+  }
+
+  /** Replace the video source mid-call; `null` returns to the camera. Republishes when video is published. */
+  async setVideoSource(source: VideoSource | null): Promise<void> {
+    this.videoSource = source;
+    this.devices._setCustomVideo(source !== null);
+    if (!this.room || this._state === 'ended') return;
+    try { await this.republishVideo(); } catch (e) { throw mapEngineError(e); }
   }
 
   /** Send up to 15 KB to the peer. Strings and JSON-able objects arrive as sent; Uint8Array arrives as bytes. */
@@ -346,8 +430,8 @@ export class Call {
 
   private publishOptions(degradation: RTCDegradationPreference): TrackPublishOptions {
     return {
-      videoCodec: 'h264',
-      simulcast: this.profile.simulcast,
+      videoCodec: this._codec,
+      simulcast: this.simulcast,
       videoEncoding: this.profile.video ? { maxBitrate: this.profile.maxBitrate, maxFramerate: this.profile.fps } : undefined,
       degradationPreference: degradation,
       dtx: false,
@@ -373,10 +457,72 @@ export class Call {
   private async publishVideo(): Promise<void> {
     const room = this.requireRoom();
     try {
-      const pub = await room.localParticipant.setCameraEnabled(true, this.captureOptions(), this.publishOptions(latencySettings(this.latency).degradationPreference));
-      const track = pub?.track;
-      this._localVideo = track ? wrapTrack(track as unknown as Parameters<typeof wrapTrack>[0]) : null;
-    } catch (e) { throw mapEngineError(e); }
+      const opts = this.publishOptions(latencySettings(this.latency).degradationPreference);
+      let track: unknown;
+      if (this.videoSource) {
+        const source = await this.resolveSource();
+        const pub = await room.localParticipant.publishTrack(source, { ...opts, source: Track.Source.Camera, name: 'camera' });
+        track = pub?.track;
+      } else {
+        const pub = await room.localParticipant.setCameraEnabled(true, this.captureOptions(), opts);
+        track = pub?.track;
+      }
+      this._localVideo = track ? wrapTrack(track as Parameters<typeof wrapTrack>[0]) : null;
+    } catch (e) { this.releaseSource(); throw mapEngineError(e); }
+  }
+
+  /** Takes the track from `videoSource`; a factory's result is owned by the SDK, a passed track is not. */
+  private async resolveSource(): Promise<MediaStreamTrack> {
+    const src = this.videoSource as VideoSource;
+    const track = typeof src === 'function' ? await src(this.profile.video ? this.profile : resolveProfile(DEFAULT_PROFILE)) : src;
+    if (!track || typeof track !== 'object' || (track as MediaStreamTrack).kind !== 'video') {
+      throw new CallError('internal', 'videoSource must be, or return, a video MediaStreamTrack.', { retryable: false });
+    }
+    this.sourceTrack = track;
+    this.sourceOwned = typeof src === 'function';
+    return track;
+  }
+
+  private releaseSource(): void {
+    if (this.sourceTrack && this.sourceOwned) { try { this.sourceTrack.stop(); } catch { /* already ended */ } }
+    this.sourceTrack = null;
+    this.sourceOwned = false;
+  }
+
+  private async unpublishVideo(): Promise<void> {
+    const room = this.room;
+    const pub = room?.localParticipant.getTrackPublication(Track.Source.Camera);
+    // A track the app handed us is never stopped by the SDK; everything else is.
+    if (room && pub?.track) await room.localParticipant.unpublishTrack(pub.track, this.sourceTrack ? this.sourceOwned : true);
+    this.releaseSource();
+    this._localVideo = null;
+    this.sendTracker.reset();
+  }
+
+  /** Unpublish and publish again with the current source, codec, simulcast and profile. A muted camera stays off. */
+  private async republishVideo(): Promise<void> {
+    const room = this.room;
+    if (!room) return;
+    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (!pub?.track) return;                       // video off or audio-only: the next enable publishes fresh
+    const wasMuted = !!pub.isMuted;
+    await this.unpublishVideo();
+    if (!wasMuted && this.profile.video) await this.publishVideo();
+  }
+
+  private async applyEncoding(sender: RTCRtpSender | undefined, p: VideoProfile): Promise<void> {
+    if (!sender) return;
+    const params = sender.getParameters();
+    params.encodings = (params.encodings && params.encodings.length ? params.encodings : [{}]).map((e) => ({ ...e, maxBitrate: p.maxBitrate, maxFramerate: p.fps }));
+    await sender.setParameters(params);
+  }
+
+  private applyJitterTarget(): JitterBufferSupport {
+    const receiver = this.remoteVideoTrack?.receiver;
+    if (!receiver) return this.jbSupport;
+    const took = applyJitterBufferTarget(receiver, this.jitterBufferTargetMs);
+    this.jbSupport = took ?? 'unsupported';
+    return this.jbSupport;
   }
 
   private adoptExistingParticipants(room: Room): void {
@@ -415,7 +561,7 @@ export class Call {
     if (track.kind === Track.Kind.Video) {
       this.remoteVideoTrack = track;
       this.recvTracker.reset();
-      applyJitterBufferTarget(track.receiver, latencySettings(this.latency).jitterBufferTargetMs);
+      this.applyJitterTarget();
       this._remoteVideo = wrapTrack(track as unknown as Parameters<typeof wrapTrack>[0]);
       this.emitter.emit('remoteVideo', this._remoteVideo);
     } else if (track.kind === Track.Kind.Audio) {
@@ -489,6 +635,10 @@ export class Call {
       const sendReport = await localTrack?.sender?.getStats?.();
       const recv = recvReport ? collectRecv(recvReport, this.recvTracker, t) : emptyRecv();
       const send = sendReport ? collectSend(sendReport, this.sendTracker, t) : emptySend();
+      try {
+        const rx = this.remoteVideoTrack?.receiver as (RTCRtpReceiver & { getSynchronizationSources?: () => RTCRtpSynchronizationSource[] }) | undefined;
+        if (rx?.getSynchronizationSources) recv.absCaptureLatencyMs = absCaptureLatency(rx.getSynchronizationSources(), t, now());
+      } catch { /* not exposed here */ }
       const estimatedLatencyMs = estimateLatency({ rttMs: recv.rttMs ?? send.rttMs, peerRttMs: this.peerRttMs, jitterBufferMs: recv.jitterBufferMs, decodeMs: recv.decodeMs, fps: recv.fps });
       const qr = this.recvQuality.update({ lossPct: recv.lossPct, jitterBufferMs: recv.jitterBufferMs, freezes: recv.freezes, rttMs: recv.rttMs });
       const qs = this.sendQuality.update({ lossPct: send.lossPct, jitterBufferMs: null, freezes: null, rttMs: send.rttMs });
@@ -506,7 +656,7 @@ export class Call {
       this.emitter.emit('stats', snap);
       if (!prev || prev.quality.recv !== qr) this.emitter.emit('qualityChanged', qr, 'recv');
       if (!prev || prev.quality.send !== qs) this.emitter.emit('qualityChanged', qs, 'send');
-      this.telemetry?.push(snap, this._peer?.identity ?? null);
+      if (this.telemetry?.enabled) this.telemetry.push(snap, this._peer?.identity ?? null, this.extraFields());
       const rtt = recv.rttMs ?? send.rttMs;
       if (rtt !== null && room.state === ConnectionState.Connected) {
         try { await lp.publishData(enc.encode(JSON.stringify({ t: 'rtt', rtt })), { reliable: false, topic: STATS_TOPIC }); } catch { /* channel not ready */ }
@@ -514,6 +664,16 @@ export class Call {
     } catch (e) {
       this.emitter.emit('error', new CallError('internal', `Stats collection failed: ${(e as Error)?.message ?? e}`, { cause: e }));
     }
+  }
+
+  private extraFields(): { recv: TelemetryFields | null; send: TelemetryFields | null } | undefined {
+    const fn = this.options.telemetryExtra;
+    if (!fn) return undefined;
+    const one = (d: Direction): TelemetryFields | null => {
+      try { const v = fn(d); return v && typeof v === 'object' ? v : null; }
+      catch (e) { this.emitter.emit('error', new CallError('internal', `telemetryExtra threw: ${(e as Error)?.message ?? e}`, { cause: e })); return null; }
+    };
+    return { recv: one('recv'), send: one('send') };
   }
 
   private audioRoute(): AudioRoute {
@@ -588,7 +748,16 @@ export class Call {
     this.devices._attachRoom(null);
     const room = this.room;
     this.room = null;
-    if (room) { try { await room.disconnect(true); } catch { /* already closed */ } }
+    if (room) {
+      // The engine's disconnect stops every published track; a track the app handed us must survive it.
+      if (this.sourceTrack && !this.sourceOwned) {
+        const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+        if (pub?.track) { try { await room.localParticipant.unpublishTrack(pub.track, false); } catch { /* already gone */ } }
+      }
+      try { await room.disconnect(true); } catch { /* already closed */ }
+    }
+    this.releaseSource();
+    this.jbSupport = null;
     if (this.audioEl) { try { this.audioEl.srcObject = null; this.audioEl.remove(); } catch { /* detached */ } this.audioEl = null; }
     this.remoteVideoTrack = null; this.remoteAudioTrack = null;
     this._remoteVideo = null; this._remoteAudio = null; this._localVideo = null;
@@ -648,10 +817,20 @@ function endReasonOf(reason: DisconnectReason | undefined, leaving: boolean): En
 }
 
 function emptyRecv(): CallStats['recv'] {
-  return { rttMs: null, jitterBufferMs: null, decodeMs: null, fps: null, width: null, height: null, kbps: null, lossPct: null, jitterMs: null, freezes: null, freezeMs: null, codec: null, transport: null, candidateType: null };
+  return { rttMs: null, jitterBufferMs: null, decodeMs: null, fps: null, width: null, height: null, kbps: null, lossPct: null, jitterMs: null, freezes: null, freezeMs: null, processingMs: null, absCaptureLatencyMs: null, codec: null, transport: null, candidateType: null };
 }
 function emptySend(): CallStats['send'] {
-  return { rttMs: null, encodeMs: null, fps: null, width: null, height: null, kbps: null, qualityLimitation: null, lossPct: null, codec: null, transport: null, candidateType: null };
+  return { rttMs: null, encodeMs: null, fps: null, width: null, height: null, kbps: null, targetKbps: null, qualityLimitation: null, lossPct: null, codec: null, transport: null, candidateType: null };
+}
+
+function checkCodec(c: unknown): VideoCodec {
+  if (typeof c === 'string' && (VIDEO_CODECS as readonly string[]).includes(c)) return c as VideoCodec;
+  throw new RangeError(`Unknown video codec "${String(c)}". Known: ${VIDEO_CODECS.join(', ')}`);
+}
+
+function checkJitterTarget(ms: unknown): number {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0 || ms > 4000) throw new RangeError('jitterBufferTargetMs must be a number between 0 and 4000.');
+  return ms;
 }
 
 /** Envelope: 1 tag byte (1 string, 2 json, 3 bytes) followed by the payload. */

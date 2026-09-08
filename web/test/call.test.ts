@@ -35,7 +35,8 @@ const H = vi.hoisted(() => {
         getTrackPublication: (source: string) => self.pubs.get(source),
         setMicrophoneEnabled: vi.fn(async (enabled: boolean) => { if (enabled) { const pub = { track: fakeTrack('audio'), isMuted: false, kind: 'audio' }; self.pubs.set('microphone', pub); return pub; } const p = self.pubs.get('microphone'); if (p) p.isMuted = true; return p; }),
         setCameraEnabled: vi.fn(async (enabled: boolean) => { if (enabled) { const pub = self.pubs.get('camera') ?? { track: fakeTrack('video'), isMuted: false, kind: 'video' }; pub.isMuted = false; self.pubs.set('camera', pub); return pub; } const p = self.pubs.get('camera'); if (p) p.isMuted = true; return p; }),
-        unpublishTrack: vi.fn(async (track: any) => { for (const [k, p] of self.pubs) if (p.track === track) self.pubs.delete(k); }),
+        unpublishTrack: vi.fn(async (track: any, stop?: boolean) => { for (const [k, p] of self.pubs) if (p.track === track) self.pubs.delete(k); if (stop !== false) track.mediaStreamTrack?.stop?.(); }),
+        publishTrack: vi.fn(async (mst: any, opts: any) => { const t = fakeTrack('video'); t.mediaStreamTrack = mst; const pub = { track: t, isMuted: false, kind: 'video', options: opts }; self.pubs.set(opts?.source ?? 'camera', pub); return pub; }),
         publishData: vi.fn(async () => {}),
       };
     }
@@ -358,6 +359,88 @@ describe('Devices', () => {
     const onChange = vi.fn(); call.devices.onChange(onChange); md.fire(); await new Promise((r) => setTimeout(r, 0));
     expect(onChange).toHaveBeenCalled();
     await call.leave();
+  });
+});
+
+describe('Custom video source, encoding and jitter target (0.2.0)', () => {
+  const mst = (): MediaStreamTrack => ({ kind: 'video', stop: vi.fn(), id: Math.random().toString(36).slice(2) } as unknown as MediaStreamTrack);
+  it('publishes a passed track under the camera source and never stops it', async () => {
+    const track = mst();
+    const { call, room } = await connected({ videoSource: track, codec: 'vp9', simulcast: true });
+    expect(room.localParticipant.setCameraEnabled).not.toHaveBeenCalled();
+    expect(room.localParticipant.publishTrack).toHaveBeenCalledWith(track, expect.objectContaining({ source: 'camera', videoCodec: 'vp9', simulcast: true, videoEncoding: { maxBitrate: 1_200_000, maxFramerate: 60 } }));
+    expect(call.localVideo?.mediaStreamTrack).toBe(track); expect(call.videoCodec).toBe('vp9'); expect(call.simulcast).toBe(true);
+    await expect(call.devices.setCamera('cam-2')).rejects.toMatchObject({ code: 'unsupported' });
+    await call.setVideoProfile('p720_30');                       // fixed track: encoding only, no republish
+    expect(room.localParticipant.unpublishTrack).not.toHaveBeenCalled();
+    expect(room.pubs.get('camera').track.sender.setParameters).toHaveBeenCalledWith(expect.objectContaining({ encodings: [expect.objectContaining({ maxBitrate: 1_200_000, maxFramerate: 30 })] }));
+    await call.leave();
+    expect(room.localParticipant.unpublishTrack).toHaveBeenCalledWith(expect.anything(), false);
+    expect((track as any).stop).not.toHaveBeenCalled();
+  });
+  it('calls a factory with the profile on every publish and stops what it returned', async () => {
+    const made: MediaStreamTrack[] = [];
+    const factory = vi.fn((p: { name: string }) => { const t = mst(); (t as any).profile = p.name; made.push(t); return t; });
+    const { call, room } = await connected({ videoSource: factory, videoProfile: 'p540_30' });
+    expect(factory).toHaveBeenCalledTimes(1); expect(factory.mock.calls[0]![0]).toMatchObject({ name: 'p540_30', width: 960, height: 540 });
+    await call.setVideoProfile('p540_60');                       // factory: republish at the new size
+    expect(factory).toHaveBeenCalledTimes(2); expect(factory.mock.calls[1]![0]).toMatchObject({ name: 'p540_60' });
+    expect((made[0] as any).stop).toHaveBeenCalled(); expect((made[1] as any).stop).not.toHaveBeenCalled();
+    await call.setVideoEncoding({ codec: 'av1' });
+    expect(factory).toHaveBeenCalledTimes(3);
+    expect(room.localParticipant.publishTrack).toHaveBeenLastCalledWith(made[2], expect.objectContaining({ videoCodec: 'av1' }));
+    await call.setVideoSource(null);                             // back to the camera
+    expect((made[2] as any).stop).toHaveBeenCalled();
+    expect(room.localParticipant.setCameraEnabled).toHaveBeenLastCalledWith(true, expect.anything(), expect.objectContaining({ videoCodec: 'av1' }));
+    await call.leave();
+  });
+  it('a republish while the camera is muted leaves it off, and a factory failure surfaces as a CallError', async () => {
+    const { call, room } = await connected();
+    await call.setCameraEnabled(false);
+    await call.setVideoEncoding({ simulcast: true });
+    expect(room.pubs.get('camera')).toBeUndefined();
+    await call.setCameraEnabled(true);
+    expect(room.localParticipant.setCameraEnabled).toHaveBeenLastCalledWith(true, expect.anything(), expect.objectContaining({ simulcast: true }));
+    await expect(call.setVideoSource(() => ({ kind: 'audio' }) as unknown as MediaStreamTrack)).rejects.toMatchObject({ code: 'internal' });
+    await call.leave();
+    expect(() => Call.create(credential(), { codec: 'h265' as any })).toThrow(/Unknown video codec/);
+    expect(() => Call.create(credential(), { jitterBufferTargetMs: -1 })).toThrow(/between 0 and 4000/);
+  });
+  it('jitter target override wins over the mode until the mode is set again, and reports support', async () => {
+    const { call, room } = await connected({ jitterBufferTargetMs: 50 });
+    expect(call.jitterBufferSupport).toBeNull();
+    const v = fakeTrack('video'); (v.receiver as any).jitterBufferTarget = null;
+    room.emit('trackSubscribed', v, {}, bob());
+    expect((v.receiver as any).jitterBufferTarget).toBe(50); expect(call.jitterBufferSupport).toBe('jitterBufferTarget');
+    expect(call.setJitterBufferTarget(100)).toBe('jitterBufferTarget'); expect((v.receiver as any).jitterBufferTarget).toBe(100); expect(call.jitterBufferTargetMs).toBe(100);
+    await call.setLatencyMode('smooth'); expect((v.receiver as any).jitterBufferTarget).toBe(150); expect(call.jitterBufferTargetMs).toBe(150);
+    const legacy = fakeTrack('video'); (legacy.receiver as any).playoutDelayHint = null;
+    room.emit('trackSubscribed', legacy, {}, bob());
+    expect(call.jitterBufferSupport).toBe('playoutDelayHint'); expect((legacy.receiver as any).playoutDelayHint).toBe(0.15);
+    room.emit('trackSubscribed', fakeTrack('video'), {}, bob());
+    expect(call.setJitterBufferTarget(0)).toBe('unsupported');
+    await call.leave();
+  });
+  it('telemetryExtra reaches the posted rows and exposes the region probe', async () => {
+    vi.useFakeTimers();
+    const f = vi.fn(async () => new Response('{}'));
+    const extra = vi.fn((d: string) => (d === 'recv' ? { g2g_p50: 88, lock: true } : { g2g_p50: 91 }));
+    const call = Call.create(credential(), { telemetry: true, telemetryExtra: extra, apiBase: 'https://api.example' });
+    await call.connect();
+    const realFetch = globalThis.fetch;
+    (globalThis as any).fetch = f;                               // Telemetry resolves fetch at flush time
+    const v = fakeTrack('video'); (v.receiver as any).getStats = vi.fn(async () => report([{ id: 'I', type: 'inbound-rtp', kind: 'video', framesPerSecond: 30 }]));
+    room().emit('trackSubscribed', v, {}, bob());
+    await vi.advanceTimersByTimeAsync(5100);
+    expect(extra).toHaveBeenCalledWith('recv'); expect(extra).toHaveBeenCalledWith('send');
+    expect(f).toHaveBeenCalled();
+    const body = JSON.parse(((f.mock.calls[0] as unknown as [string, RequestInit])[1]).body as string);
+    const recvRow = body.samples.find((s: any) => s.direction === 'recv'), sendRow = body.samples.find((s: any) => s.direction === 'send');
+    expect(recvRow).toMatchObject({ g2g_p50: 88 }); expect(recvRow.extra).toMatchObject({ lock: true, sdk: expect.any(String) });
+    expect(sendRow).toMatchObject({ g2g_p50: 91 });
+    expect(call.regionProbe).toBeNull();
+    await call.leave();
+    globalThis.fetch = realFetch;
   });
 });
 

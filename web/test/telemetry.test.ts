@@ -3,8 +3,8 @@ import { Telemetry } from '../src/telemetry';
 import type { CallStats } from '../src/stats';
 
 const snap = (ts: number): CallStats => ({
-  ts, recv: { rttMs: 20, jitterBufferMs: 40, decodeMs: 1, fps: 55, width: 960, height: 540, kbps: 900, lossPct: 0, jitterMs: 4, freezes: 0, freezeMs: 0, codec: 'H264', transport: 'udp', candidateType: 'srflx' },
-  send: { rttMs: 22, encodeMs: 1, fps: 60, width: 960, height: 540, kbps: 1000, qualityLimitation: 'none', lossPct: 0, codec: 'H264', transport: 'udp', candidateType: 'srflx' },
+  ts, recv: { rttMs: 20, jitterBufferMs: 40, decodeMs: 1, fps: 55, width: 960, height: 540, kbps: 900, lossPct: 0, jitterMs: 4, freezes: 0, freezeMs: 0, processingMs: 45, absCaptureLatencyMs: null, codec: 'H264', transport: 'udp', candidateType: 'srflx' },
+  send: { rttMs: 22, encodeMs: 1, fps: 60, width: 960, height: 540, kbps: 1000, targetKbps: 1100, qualityLimitation: 'none', lossPct: 0, codec: 'H264', transport: 'udp', candidateType: 'srflx' },
   peerRttMs: 30, estimatedLatencyMs: 85, quality: { recv: 'good', send: 'good' }, region: 'eu-central', nodeId: 'ND_1', serverVersion: '1.13.6', joinMs: 900, audioRoute: 'unknown',
 });
 
@@ -43,6 +43,22 @@ describe('Telemetry', () => {
     const on = new Telemetry({ apiBase: 'https://api.example', callId: 'c-1', token: 't', enabled: true, sdkVersion: '0', fetchFn: f as any });
     on.push(snap(1), null); await expect(on.flush()).resolves.toBeUndefined(); expect(f).toHaveBeenCalledTimes(1);
     await on.stop();
+  });
+  it('routes app fields: measured-latency columns stay columns, the rest goes under extra, SDK keys win', async () => {
+    const f = vi.fn(async () => new Response('{}'));
+    const t = new Telemetry({ apiBase: 'https://api.example', callId: 'c-1', token: 'tok', enabled: true, sdkVersion: '0.2.0', fetchFn: f as any, userAgent: 'UA' });
+    t.push(snap(1000), 'bob', { recv: { g2g_p50: 84.4, g2g_p95: 101, g2g_samples: 590, lock: true, quality: 'spoofed', opts: { jb: 0 } }, send: { g2g_p50: 90, note: 'peer side' } });
+    t.push(snap(2000), 'bob', { recv: { g2g_p50: 'bad' as unknown as number }, send: null });
+    await t.flush();
+    const body = JSON.parse(((f.mock.calls[0] as unknown as [string, RequestInit])[1]).body as string);
+    expect(body.samples[0]).toMatchObject({ direction: 'recv', g2g_p50: 84.4, g2g_p95: 101, g2g_samples: 590 });
+    expect(body.samples[0].extra).toMatchObject({ lock: true, opts: { jb: 0 }, quality: 'good', estimated_latency_ms: 85, processing_ms: 45, sdk: '0.2.0' });
+    expect(body.samples[0].lock).toBeUndefined();
+    expect(body.samples[1]).toMatchObject({ direction: 'send', g2g_p50: 90 });
+    expect(body.samples[1].extra).toMatchObject({ note: 'peer side', target_kbps: 1100 });
+    expect(body.samples[2].g2g_p50).toBeNull();                 // a non-number is stored as null, never as a string
+    expect(body.samples[3].g2g_p50).toBeUndefined();            // no fields for that direction
+    await t.stop();
   });
   it('caps the queue at 120 rows', () => {
     const t = new Telemetry({ apiBase: 'x', callId: 'c', token: 't', enabled: true, sdkVersion: '0', fetchFn: vi.fn() as any });

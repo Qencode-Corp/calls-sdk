@@ -16,10 +16,13 @@ export class Devices {
   private room: Room | null = null;
   private readonly audioElements = new Set<HTMLMediaElement>();
   private speakerId = '';
+  private customVideo = false;
   private readonly onDeviceChange = () => { void this.list().then((l) => this.emitter.emit('change', l)); };
 
   /** @internal */
   _attachRoom(room: Room | null): void { this.room = room; }
+  /** @internal The call publishes a custom video source, so the engine must not replace it with a camera. */
+  _setCustomVideo(on: boolean): void { this.customVideo = on; }
   /** @internal */
   _registerAudioElement(el: HTMLMediaElement): void {
     this.audioElements.add(el);
@@ -67,6 +70,7 @@ export class Devices {
 
   private async switch(kind: MediaDeviceKind, deviceId: string): Promise<void> {
     if (!this.room) throw new CallError('internal', 'Devices can be switched after connect(); before that, pass the device id in options.', { retryable: false });
+    if (kind === 'videoinput' && this.customVideo) throw new CallError('unsupported', 'The video comes from a custom videoSource; switch cameras in the code that produces it.', { retryable: false });
     try {
       const ok = await this.room.switchActiveDevice(kind, deviceId, true);
       if (!ok) throw new CallError('deviceUnavailable', `Could not switch to device ${deviceId}.`);
