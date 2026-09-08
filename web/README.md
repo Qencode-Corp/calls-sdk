@@ -2,7 +2,7 @@
 
 Low-latency 1:1 audio and video calls inside your own UI. The SDK takes a short-lived
 participant credential minted by **your backend**, connects, renders media into views you
-place, and reports call quality. It ships no screens and no theme. Version 0.2.0, pre-release,
+place, and reports call quality. It ships no screens and no theme. Version 0.3.0, pre-release,
 on npm as [`@qencode/calls`](https://www.npmjs.com/package/@qencode/calls).
 
 ## Quickstart
