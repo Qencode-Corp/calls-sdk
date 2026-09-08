@@ -78,11 +78,18 @@ export interface CallOptions {
   endOnPeerLeft?: boolean;
   /**
    * Let the engine adapt what it sends and receives to how the video is displayed (default true).
-   * The receiver asks for the layer matching the rendered size, and a video element that is
-   * hidden or in a background tab pauses that track on the server. Set false to always
-   * receive and send the full profile regardless of visibility, as a measurement bench does.
+   * The receiver asks for the layer matching the rendered size in device pixels, and the sender
+   * encodes only the layers someone is subscribed to. Set false to always receive and send the
+   * full profile regardless of how the video is shown, as a measurement bench does.
    */
   adaptiveStream?: boolean;
+  /**
+   * With `adaptiveStream`, pause the remote video on the server while the page is hidden (a
+   * background tab, a minimized window) and resume it when the page is shown again. Default
+   * false: a call keeps its picture flowing so it is there the moment the user comes back, and
+   * the peer's encoder never has to restart. Set true to save bandwidth while hidden.
+   */
+  pauseVideoInBackground?: boolean;
   /**
    * Publish this track instead of opening the camera: a canvas, a screen, a processed camera. A
    * factory is called with the profile on every publish and republish. The SDK stops a track a
@@ -195,6 +202,7 @@ export class Call {
       apiBase: options.apiBase ?? cred.apiBase ?? DEFAULT_API_BASE,
       endOnPeerLeft: options.endOnPeerLeft ?? true,
       adaptiveStream: options.adaptiveStream ?? true,
+      pauseVideoInBackground: options.pauseVideoInBackground ?? false,
       codec: options.codec ?? 'h264',
       cameraId: options.cameraId, microphoneId: options.microphoneId, region: options.region ?? null, forceRelay: options.forceRelay,
       videoSource: options.videoSource, simulcast: options.simulcast, jitterBufferTargetMs: options.jitterBufferTargetMs, telemetryExtra: options.telemetryExtra,
@@ -434,7 +442,9 @@ export class Call {
     const s = latencySettings(this.latency);
     const adaptive = this.options.adaptiveStream !== false;
     const room = new Room({
-      adaptiveStream: adaptive,
+      adaptiveStream: adaptive
+        ? { pauseVideoInBackground: this.options.pauseVideoInBackground === true, pixelDensity: 'screen' }
+        : false,
       dynacast: adaptive,
       publishDefaults: this.publishOptions(s.degradationPreference),
       videoCaptureDefaults: this.captureOptions(),

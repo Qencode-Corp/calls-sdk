@@ -18,6 +18,11 @@
 - A camera that cannot be opened mid-call no longer leaves the call without video: the
   previous camera is reopened and `deviceUnavailable` is thrown. A remembered camera that is
   gone at `connect()` falls back to the default one instead of failing the call.
+- Fix: the remote picture stopped while the page was in a background tab or a hidden window
+  and stayed black until the tab was shown again, and the peer's encoder stopped with it. The
+  adaptive stream no longer pauses hidden video by default; `pauseVideoInBackground: true`
+  restores the pause for apps that prefer the bandwidth saving. The layer requested for an
+  element now follows the screen's pixel density, so a phone-sized element gets the sharp layer.
 
 ## 0.2.0 (2026-09-08)
 

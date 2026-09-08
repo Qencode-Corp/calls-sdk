@@ -104,9 +104,17 @@ describe('Call lifecycle', () => {
   });
   it('room options carry adaptive stream, dynacast and the profile', async () => {
     const { room, call } = await connected({ videoProfile: 'p720_60', latencyMode: 'smooth' });
-    expect(room.options.adaptiveStream).toBe(true); expect(room.options.dynacast).toBe(true);
+    expect(room.options.adaptiveStream).toEqual({ pauseVideoInBackground: false, pixelDensity: 'screen' }); expect(room.options.dynacast).toBe(true);
     expect(room.options.publishDefaults).toMatchObject({ simulcast: true, videoEncoding: { maxBitrate: 1_800_000, maxFramerate: 60 }, degradationPreference: 'maintain-resolution' });
     await call.leave();
+  });
+  it('pauseVideoInBackground opts into the hidden-page pause; adaptiveStream false turns adaptation off', async () => {
+    const a = await connected({ pauseVideoInBackground: true });
+    expect(a.room.options.adaptiveStream).toEqual({ pauseVideoInBackground: true, pixelDensity: 'screen' });
+    await a.call.leave();
+    const b = await connected({ adaptiveStream: false });
+    expect(b.room.options.adaptiveStream).toBe(false); expect(b.room.options.dynacast).toBe(false);
+    await b.call.leave();
   });
   it('audio-only and video-off options skip publishing', async () => {
     const { room, call } = await connected({ videoProfile: 'audioOnly' });
