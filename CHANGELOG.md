@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+`@qencode/calls`
+
+- Fix: `require('@qencode/calls')` returned an empty object. The `require` condition pointed at
+  a file named `umd` that esbuild built with `--format=iife`, so `module.exports` was never
+  assigned; with `"type": "module"` set, newer Node also read it as ESM. There is now a real
+  CommonJS build at `dist/qencode-calls.cjs`, and `main` and `exports.require` point at it.
+  Affected `require()` from Node, Jest without ESM and older bundlers; browsers were never
+  affected, which is why manual testing did not catch it. CI now loads the CJS entry point and
+  fails if it exports nothing.
+- Fix: `sideEffects` listed only the UMD build, declaring the ES module builds pure. A bundler
+  that trusted it could drop the top-level `registerVideoElement()` call, leaving
+  `<qencode-video>` in the quickstart as an element that never upgrades. The field is removed:
+  every published entry point registers the element on import, so none of them is pure.
+
 ## 0.3.0 (2026-09-08)
 
 `@qencode/calls`

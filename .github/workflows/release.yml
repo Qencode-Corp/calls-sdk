@@ -26,6 +26,14 @@ jobs:
         run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
       - run: npm test
       - run: npm run build
+      - name: the CJS entry point must export the API
+        run: |
+          node -e '
+            const m = require("./dist/qencode-calls.cjs");
+            if (typeof m.Call !== "function" || typeof m.isCallError !== "function") {
+              console.error("CJS entry exports:", Object.keys(m)); process.exit(1);
+            }
+          '
       - name: skip when this version is already on npm (published by hand)
         id: published
         run: |

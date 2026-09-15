@@ -20,3 +20,14 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # vitest runs ESM and never touches the require() path, so the CJS entry point has to be
+      # checked separately: it once shipped built as an IIFE, which returns {} under require().
+      - name: the CJS entry point must export the API
+        run: |
+          node -e '
+            const m = require("./dist/qencode-calls.cjs");
+            if (typeof m.Call !== "function" || typeof m.isCallError !== "function") {
+              console.error("CJS entry exports:", Object.keys(m)); process.exit(1);
+            }
+            console.log("CJS entry ok,", Object.keys(m).length, "exports");
+          '

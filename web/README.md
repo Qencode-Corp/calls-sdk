@@ -45,7 +45,8 @@ Return that last object to the browser (optionally add `call_id` and `api_base`)
 <qencode-video id="self" mirror></qencode-video>
 ```
 
-`npm install @qencode/calls` gives the same API as an ES module with TypeScript types.
+`npm install @qencode/calls` gives the same API with TypeScript types, as an ES module or
+through `require()`.
 
 ## Builds and size
 
@@ -53,6 +54,7 @@ Return that last object to the browser (optionally add `call_id` and `api_base`)
 |---|---|---|
 | `dist/qencode-calls.esm.js` | `import` through a bundler; the engine (`livekit-client`) is a dependency your bundler resolves and dedupes | ~11 KB |
 | `dist/qencode-calls.esm.bundle.js` | `<script type="module">` with no bundler; engine included | ~154 KB |
+| `dist/qencode-calls.cjs` | `require()` from Node, Jest without ESM, or an older bundler; the engine stays a resolved dependency | ~11 KB |
 | `dist/qencode-calls.umd.js` | classic `<script>`; exposes `window.QencodeCalls`; engine included | ~154 KB |
 
 The SDK itself is about 11 KB gzipped. The self-contained builds are dominated by the engine,
@@ -84,11 +86,13 @@ which is about 145 KB gzipped on its own.
 ### Options
 
 `adaptiveStream` (default `true`) lets the engine match what is sent and received to how the
-video is displayed: a phone rendering a desktop's 720p pulls the 540p layer, and a hidden or
-background video element pauses that track on the server until it is visible again. Two tabs
-on one machine therefore show a black remote picture in whichever tab is in the background.
-Set it to `false` to always send and receive the full profile, which is what a measurement
-bench wants and what a customer UI rarely does.
+video is displayed: a phone rendering a desktop's 720p pulls the 540p layer, and the layer
+requested for an element follows the screen's pixel density. Hidden and background elements
+keep playing, so two tabs on one machine both show a picture. Set `pauseVideoInBackground` to
+`true` to pause a hidden track on the server instead and save that bandwidth, at the cost of a
+black picture until the tab is shown again. Set `adaptiveStream` to `false` to always send and
+receive the full profile, which is what a latency measurement wants and what a customer UI
+rarely does.
 
 | Option | Default | Notes |
 |---|---|---|
@@ -107,6 +111,7 @@ bench wants and what a customer UI rarely does.
 | `simulcast` | per profile | Force simulcast layers on or off. |
 | `jitterBufferTargetMs` | per latency mode | Pin the receiver's jitter buffer target; `0` asks for the browser's floor. |
 | `telemetryExtra` | none | `(direction) => fields` appended to every telemetry row; see telemetry. |
+| `pauseVideoInBackground` | `false` | With `adaptiveStream`, pause a hidden or background video element's track on the server until it is visible again. |
 | `forceRelay` | `false` | Connect through TURN only, to measure the relay path. |
 
 ### Switching cameras
@@ -219,15 +224,15 @@ Every second, `call.stats` and the `stats` event carry:
 
 With `telemetry: true` and a credential that carries `call_id`, the SDK posts the last
 snapshots every 5 s to `POST {apiBase}/v1/calls/{call_id}/stats` using the participant token.
-The rows are the fields above plus SDK version, platform and user agent. Nothing identifying the
-user is sent, media never is, and a failed post is dropped silently. Manual credentials without a
-`call_id` post nothing.
+The rows are the fields above plus SDK version, platform, the browser's full user-agent string,
+and the participant identity your backend chose. That identity is opaque to Qencode, but it is
+yours: do not put a name or an email in it. Media is never sent, and a failed post is dropped
+silently. Manual credentials without a `call_id` post nothing.
 
 `telemetryExtra` adds your own fields to every row. It is called once per row with `'recv'` or
 `'send'`. Three keys are stored as columns because the API knows them: `g2g_p50`, `g2g_p95` and
-`g2g_samples`, an app's own measured glass-to-glass latency in ms over its window, as the Qencode
-bench posts. Every other key lands in the row's `extra` object next to the SDK's keys, which win
-on a name clash.
+`g2g_samples`, an app's own measured glass-to-glass latency in ms over its window. Every other key
+lands in the row's `extra` object next to the SDK's keys, which win on a name clash.
 
 ```ts
 Call.create(cred, { telemetryExtra: (direction) => ({ session: mySessionId, screen: direction === 'recv' ? 'room' : undefined }) });
@@ -243,10 +248,14 @@ selection needs `setSinkId`, which Safari lacks; `devices.canSelectSpeaker` says
 ## Running the example
 
 ```bash
+npm ci && npm run build          # the example page loads /dist, which is not in the repository
 cd examples/backend-node && npm install
 QENCODE_API_KEY=<your project API key> npm start   # API_BASE defaults to https://api.qencode.com
 # open http://localhost:8787/ in two tabs or on two devices, join as alice and bob
 ```
+
+The first line is not optional from a fresh clone: `examples/vanilla/app.js` imports the
+self-contained build from `/dist`, and `dist/` is generated, not committed.
 
 The backend creates one call, mints a credential per identity, and serves `examples/vanilla`.
 

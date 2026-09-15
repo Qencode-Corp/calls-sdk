@@ -4,14 +4,14 @@
   "description": "Qencode Calls web SDK: low-latency 1:1 audio and video calls inside your own UI.",
   "license": "Apache-2.0",
   "type": "module",
-  "main": "./dist/qencode-calls.umd.js",
+  "main": "./dist/qencode-calls.cjs",
   "module": "./dist/qencode-calls.esm.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/qencode-calls.esm.js",
-      "require": "./dist/qencode-calls.umd.js",
+      "require": "./dist/qencode-calls.cjs",
       "default": "./dist/qencode-calls.esm.js"
     },
     "./bundle": {
@@ -25,15 +25,13 @@
     "README.md",
     "LICENSE"
   ],
-  "sideEffects": [
-    "./dist/qencode-calls.umd.js"
-  ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build:esm": "esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2020 --external:livekit-client --outfile=dist/qencode-calls.esm.js --sourcemap --minify",
     "build:umd": "esbuild src/index.ts --bundle --format=iife --global-name=QencodeCalls --platform=browser --target=es2020 --outfile=dist/qencode-calls.umd.js --sourcemap --minify",
+    "build:cjs": "esbuild src/index.ts --bundle --format=cjs --platform=browser --target=es2020 --external:livekit-client --outfile=dist/qencode-calls.cjs --sourcemap --minify",
     "build:types": "tsc -p tsconfig.build.json",
-    "build": "npm run typecheck && npm run build:esm && npm run build:esm-bundle && npm run build:umd && npm run build:types",
+    "build": "npm run typecheck && npm run build:esm && npm run build:esm-bundle && npm run build:umd && npm run build:cjs && npm run build:types",
     "test": "vitest run",
     "test:watch": "vitest",
     "build:esm-bundle": "esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2020 --outfile=dist/qencode-calls.esm.bundle.js --sourcemap --minify"

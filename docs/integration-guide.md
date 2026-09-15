@@ -47,9 +47,10 @@ error codes are in [web/README.md](../web/README.md).
 
 ## 3. iOS and Android
 
-Same concepts, events and error codes. The Swift Package lives in
-[calls-sdk-swift](https://github.com/Qencode-Corp/calls-sdk-swift); the Android library ships
-from this repository. Both are in development and release together with the web package.
+Same concepts, events and error codes. Each mobile client has its own repository: the Swift
+Package in [calls-sdk-swift](https://github.com/Qencode-Corp/calls-sdk-swift), the Android
+library in [calls-sdk-android](https://github.com/Qencode-Corp/calls-sdk-android). Both are in
+development and release together with the web package.
 
 ## Choosing a profile and a latency mode
 

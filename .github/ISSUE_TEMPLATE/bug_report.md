@@ -4,7 +4,7 @@ about: Something in an SDK does not behave as documented
 labels: bug
 ---
 
-**Package and version** (for example `@qencode/calls` 0.1.0):
+**Package and version** (for example `@qencode/calls` 0.3.0):
 
 **Platform** (browser and version, or OS and device):
 

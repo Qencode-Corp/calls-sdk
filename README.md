@@ -8,21 +8,23 @@ publishes camera and microphone, renders the remote stream, and reports call qua
 | Package | Platform | Status |
 |---|---|---|
 | [`@qencode/calls`](web/) | Web, TypeScript, evergreen browsers | [0.3.0 on npm](https://www.npmjs.com/package/@qencode/calls), pre-release |
-| `com.qencode:calls` | Android, Kotlin, API 24+ | in development |
+| [`com.qencode:calls`](https://github.com/Qencode-Corp/calls-sdk-android) | Android, Kotlin, API 24+ | in development, separate repository |
 | [`QencodeCalls`](https://github.com/Qencode-Corp/calls-sdk-swift) | iOS 15+, Swift Package | in development, separate repository |
-| `@qencode/calls-server`, `qencode-calls` (PyPI) | Node and Python helpers for the token step | in development |
 
 Start with the [integration guide](docs/integration-guide.md), then the
-[API reference](docs/api.md) for the six server-side calls your backend makes.
+[API reference](docs/api.md) for the five server-side calls your backend makes.
 
 ## Layout
 
 ```
 web/        @qencode/calls: source, tests, builds, examples
 docs/       integration guide and API reference
-android/    (planned) com.qencode:calls
-server/     (planned) Node and Python helpers
 ```
+
+The Android and iOS clients live in their own repositories,
+[calls-sdk-android](https://github.com/Qencode-Corp/calls-sdk-android) and
+[calls-sdk-swift](https://github.com/Qencode-Corp/calls-sdk-swift). The backend side is the
+same for all three and is documented here.
 
 ## Principles
 
