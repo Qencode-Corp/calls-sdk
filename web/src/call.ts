@@ -8,7 +8,7 @@ import { Emitter } from './events';
 import { parseCredential, isExpired, msUntilExpiryWarning, type CallCredential, type ParsedCredential } from './credential';
 import { resolveProfile, DEFAULT_PROFILE, AUDIO_BITRATE, type VideoProfileName, type VideoProfile } from './profiles';
 import { latencySettings, applyJitterBufferTarget, applyDegradationPreference, DEFAULT_LATENCY_MODE, type LatencyMode } from './latency';
-import { chooseRegion, type RegionChoice } from './regions';
+import { chooseRegion, placeCall, type RegionChoice } from './regions';
 import { DeltaTracker, QualityTracker, collectRecv, collectSend, estimateLatency, absCaptureLatency, type CallStats, type Quality, type Direction, type AudioRoute } from './stats';
 import { Telemetry, type TelemetryFields } from './telemetry';
 import { Devices, type DeviceList } from './devices';
@@ -61,7 +61,10 @@ export interface CallOptions {
   videoProfile?: VideoProfileName;
   /** `lowest` (default) or `smooth`. */
   latencyMode?: LatencyMode;
-  /** Pin a region name from the credential; default picks the fastest by probe. */
+  /**
+   * Pin a region name from the credential. For a call the API has not placed yet this is the
+   * region the SDK asks for; by default the SDK probes and the API picks the nearest.
+   */
   region?: string | null;
   /** Post quality stats to Qencode every 5 s. Default true. */
   telemetry?: boolean;
@@ -69,7 +72,7 @@ export interface CallOptions {
   autoReconnect?: boolean;
   /** Default 'warn'. Never logs media or credentials. */
   logLevel?: LogLevelName;
-  /** API base used only by telemetry. Default https://api.qencode.com, or the credential's api_base. */
+  /** API base for telemetry and placement. Default https://api.qencode.com, or the credential's api_base. */
   apiBase?: string;
   /** Initial camera and microphone device ids. */
   cameraId?: string;
@@ -261,7 +264,9 @@ export class Call {
     this.setState('connecting', null);
     const t0 = now();
     try {
-      this.regionChoice = await chooseRegion(this.cred.regions, this.options.region);
+      this.regionChoice = this.cred.placement === 'pending'
+        ? await this.place()
+        : await chooseRegion(this.cred.regions, this.options.region);
       const room = this.buildRoom();
       this.room = room;
       this.devices._attachRoom(room);
@@ -322,6 +327,14 @@ export class Call {
    * refusal was not the token, the room or the network; on a two-person room it is capacity.
    * One short request on the failure path only.
    */
+  /** The region of a call the API has not placed yet; see placeCall. */
+  private async place(): Promise<RegionChoice> {
+    if (!this.cred.callId) {
+      throw new CallError('credentialInvalid', 'The call is not placed yet and the credential carries no call id to place it with.', { retryable: false });
+    }
+    return placeCall(this.cred.regions, { apiBase: this.options.apiBase, callId: this.cred.callId, token: this.cred.token, pinned: this.options.region });
+  }
+
   private async joinRefusedByServer(e: unknown): Promise<boolean> {
     if (!(e instanceof ConnectionError)) return false;
     if (e.reason !== ConnectionErrorReason.WebSocket && e.reason !== ConnectionErrorReason.InternalError) return false;

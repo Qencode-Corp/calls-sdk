@@ -8,7 +8,7 @@ runs the media.
 app ──(start call with Bob)──▶ backend ──POST /v1/calls──────────▶ Qencode API
                                        ──POST /v1/calls/{id}/tokens──▶ Qencode API
 app ◀──(credential, unchanged)── backend
-app ──connect(credential)────────────────────────────────────────▶ nearest media region
+app ──connect(credential)────────────────────────────────────────▶ the call's media region
 ```
 
 ## 1. Backend: create a call and mint credentials

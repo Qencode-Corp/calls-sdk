@@ -15,6 +15,17 @@ describe('parseCredential', () => {
     expect(c.identity).toBe('bob'); expect(c.roomName).toBe('r-9'); expect(c.expiresAt).toBe(exp * 1000);
     expect(c.regions).toEqual([{ name: 'default', url: 'wss://x' }]); expect(c.callId).toBeNull();
   });
+  it('reads placement; anything but pending is placed', () => {
+    expect(parseCredential(credential({ placement: 'pending' })).placement).toBe('pending');
+    expect(parseCredential(credential({ placement: 'placed' })).placement).toBe('placed');
+    expect(parseCredential(credential()).placement).toBe('placed');
+  });
+  it('takes the call id from the token metadata when call_id is missing', () => {
+    const token = fakeJwt({ sub: 'bob', video: { room: 'r-9' }, metadata: JSON.stringify({ call_id: 'c-meta', role: 'A' }) });
+    expect(parseCredential({ token, url: 'wss://x' }).callId).toBe('c-meta');
+    expect(parseCredential({ token, url: 'wss://x', call_id: 'c-own' }).callId).toBe('c-own');
+    expect(parseCredential({ token: fakeJwt({ sub: 'b', video: { room: 'r' }, metadata: 'not json' }), url: 'wss://x' }).callId).toBeNull();
+  });
   it('rejects a malformed token and a bad url with credentialInvalid', () => {
     expect(() => parseCredential({ token: 'nope', url: 'wss://x' })).toThrowError(CallError);
     try { parseCredential({ token: 'nope', url: 'wss://x' }); } catch (e) { expect((e as CallError).code).toBe('credentialInvalid'); }

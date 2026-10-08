@@ -4,6 +4,13 @@
 
 `@qencode/calls`
 
+- Region placement. The API now places a call (region `auto`) in the region nearest its first
+  participant. For a credential with `placement: "pending"` the SDK probes the regions, posts
+  the results to `POST /v1/calls/{id}/placement` and connects where the API says; everyone
+  after joins the same region. A credential without `placement` connects as before. A placed
+  call's credential carries one region, so the SDK no longer chooses between regions itself:
+  two participants probing separately could land in different regions and never meet.
+  `call_id` is read from the token's metadata when the credential omits it.
 - Fix: `require('@qencode/calls')` returned an empty object. The `require` condition pointed at
   a file named `umd` that esbuild built with `--format=iife`, so `module.exports` was never
   assigned; with `"type": "module"` set, newer Node also read it as ESM. There is now a real

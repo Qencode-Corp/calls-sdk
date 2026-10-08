@@ -2,7 +2,7 @@
 
 Client libraries for Qencode Calls: real-time 1:1 audio and video calls that you render in
 your own interface. Your backend creates a call and mints a per-participant credential
-through the Qencode API; the SDK takes that credential, connects to the nearest region,
+through the Qencode API; the SDK takes that credential, connects to the call's region,
 publishes camera and microphone, renders the remote stream, and reports call quality.
 
 | Package | Platform | Status |
@@ -31,7 +31,7 @@ same for all three and is documented here.
 - **Custom UI first.** The SDK renders video into a view you place. No screens, no theme.
 - **No API keys in apps.** Apps hold only a short-lived participant credential minted by your backend.
 - **Same vocabulary everywhere.** One set of objects, events and error codes across web, iOS and Android.
-- **Lowest latency by default.** Hardware H.264, 540p at 60 fps, region selection by probe.
+- **Lowest latency by default.** Hardware H.264, 540p at 60 fps, and each call placed in the region nearest its first participant.
 
 ## License
 

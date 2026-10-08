@@ -136,6 +136,31 @@ describe('Call lifecycle', () => {
     expect(room.connectArgs.url).toBe('wss://eu.example'); expect(call.region).toBe('eu');
     await call.leave();
   });
+  it('a pending call is placed by the API before connecting', async () => {
+    const realFetch = globalThis.fetch;
+    const posts: string[] = [];
+    (globalThis as any).fetch = vi.fn(async (url: string, init: any) => {
+      if (init?.method === 'POST' && String(url).endsWith('/placement')) {
+        posts.push(String(url));
+        return new Response(JSON.stringify({ region: 'us', url: 'wss://us.example', regions: [{ name: 'us', url: 'wss://us.example' }] }), { status: 200 });
+      }
+      return new Response('');
+    });
+    const regions = [{ name: 'eu', url: 'wss://eu.example' }, { name: 'us', url: 'wss://us.example' }];
+    const { room, call } = await connected({ apiBase: 'https://api.example' }, { regions, placement: 'pending' });
+    expect(posts).toEqual(['https://api.example/v1/calls/c-1/placement']);
+    expect(room.connectArgs.url).toBe('wss://us.example'); expect(call.region).toBe('us');
+    await call.leave();
+    globalThis.fetch = realFetch;
+  });
+  it('a pending call whose placement says the call ended does not connect', async () => {
+    const realFetch = globalThis.fetch;
+    (globalThis as any).fetch = vi.fn(async (_url: string, init: any) => new Response('', { status: init?.method === 'POST' ? 409 : 200 }));
+    const call = Call.create(credential({ placement: 'pending', regions: [{ name: 'eu', url: 'wss://eu.example' }] }), { telemetry: false });
+    await expect(call.connect()).rejects.toMatchObject({ code: 'roomClosed' });
+    expect(MockRoom.instances).toHaveLength(0); expect(call.state).toBe('ended');
+    globalThis.fetch = realFetch;
+  });
   it('refuses to connect twice and rejects an expired credential before touching the network', async () => {
     const { call } = await connected();
     await expect(call.connect()).rejects.toMatchObject({ code: 'internal' });

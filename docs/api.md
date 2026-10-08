@@ -1,7 +1,7 @@
 # Qencode Calls API reference
 
-Everything your backend needs. Apps never call these endpoints except the stats one, which
-the SDK calls for you with the participant credential.
+Everything your backend needs. Apps never call these endpoints except placement and stats,
+which the SDK calls for you with the participant credential.
 
 Base URL: `https://api.qencode.com`. Authentication for the project endpoints is a project
 JWT from `POST /v1/access_token/{api_key}`, sent as `Authorization: Bearer <token>`.
@@ -13,7 +13,9 @@ JWT from `POST /v1/access_token/{api_key}`, sent as `Authorization: Bearer <toke
 | `POST /v1/calls/{id}/tokens` | project JWT | Mint one participant credential |
 | `GET /v1/calls/{id}` | project JWT | Status, participants, latest quality summary |
 | `DELETE /v1/calls/{id}` | project JWT | End the call for everyone |
+| `POST /v1/calls/{id}/placement` | participant credential | Where an unplaced call lives; the SDK calls it before connecting |
 | `POST /v1/calls/{id}/stats` | participant credential | Quality samples; the SDK posts these every 5 s |
+| `GET /v1/calls/regions` | none | The regions a call can be placed in |
 | webhooks to `callback_url` | none yet, see below | Lifecycle events |
 
 ## Create a call
@@ -22,6 +24,11 @@ JWT from `POST /v1/access_token/{api_key}`, sent as `Authorization: Bearer <toke
 POST /v1/calls
 {"callback_url": "https://example.com/hooks/calls"}   // all fields optional
 ```
+
+`region` is `auto` by default: the call is placed in the region nearest its first
+participant, and everyone after joins there. Until then the call has `placement: "pending"`
+and no `region`. With one region available the call is placed at once. Name a region from
+`GET /v1/calls/regions` to pin the call there instead.
 
 ```json
 {"call": {"id": "…", "room_name": "call-…", "status": "created",
@@ -39,17 +46,21 @@ POST /v1/calls/{id}/tokens
 ```
 
 `identity` is required, 1 to 64 characters, unique within the call and opaque to Qencode.
-`name` is optional, up to 128 characters. `role` is `A` or `B`. `ttl` is 60 to 86400 seconds,
-default 600. Pass the response to your app; it is the SDK's only input:
+`name` is optional, up to 128 characters. `role` is `A` or `B`. `ttl` is 60 to 14400 seconds,
+default 600 — the ceiling was 86400 until 2026-09-17, and a larger value now returns 400.
+This token also authenticates the SDK's stats posts, so its TTL is how long that write
+access outlives the call; ask for what the call needs, not for the maximum.
+Pass the response to your app; it is the SDK's only input:
 
 ```json
 {"token": "eyJ…", "url": "wss://…", "regions": [{"name": "eu-central", "url": "wss://…"}],
+ "placement": "placed", "call_id": "…",
  "identity": "alice", "room_name": "call-…", "expires_at": "2026-09-08 12:10:00"}
 ```
 
-Add `call_id` to that object before you hand it over, from the call you created in the step
-above. It is not part of this response, and without it the SDK posts no quality samples and
-says nothing about it — see [Stats](#stats).
+Hand it to the app unchanged. For a call not placed yet `placement` is `"pending"` and
+`regions` lists every region: the SDK probes them, asks `POST /v1/calls/{id}/placement`
+where to connect, and connects there. Your backend does nothing for this.
 
 A connected call outlives its credential; only a fresh `connect()` needs a valid one. The SDK
 raises `credentialExpiring` two minutes ahead so your app can fetch a new one.

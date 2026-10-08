@@ -65,7 +65,7 @@ which is about 145 KB gzipped on its own.
 | Member | Meaning |
 |---|---|
 | `Call.create(credential, options)` | Builds a call. No network yet. |
-| `connect()` | Probes regions when the credential lists several, connects, publishes camera and microphone per options. Rejects with a `CallError`. |
+| `connect()` | For a call the API has not placed yet, probes the regions and asks the API where to connect; then connects and publishes camera and microphone per options. Rejects with a `CallError`. |
 | `leave()` | Unpublishes, disconnects, releases devices. Idempotent. |
 | `state` | `idle`, `connecting`, `connected`, `reconnecting`, `ended`; `endReason` says why it ended. |
 | `localVideo`, `remoteVideo`, `remoteAudio` | Track handles with `attach(element)` and `detach()`. Remote audio is played by the SDK; the handle is for metering or custom output. |
@@ -99,7 +99,7 @@ rarely does.
 | `audio`, `video` | `true` | Publish on connect. |
 | `videoProfile` | `p540_60` | See profiles. |
 | `latencyMode` | `lowest` | See latency modes. |
-| `region` | auto | Pin a region name from the credential. |
+| `region` | auto | Ask for a region name from the credential instead of probing. Only matters for a call not placed yet; the first participant's region wins. |
 | `telemetry` | `true` | Post quality stats to Qencode every 5 s. |
 | `autoReconnect` | `true` | Resume for up to 60 s after a network change, then end with reason `network`. |
 | `endOnPeerLeft` | `true` | 1:1 semantics: the call ends when the peer leaves. |

@@ -17,8 +17,14 @@ export interface CallCredential {
   /** ISO 8601 string, epoch seconds, or epoch milliseconds. */
   expires_at?: string | number;
   call_id?: string;
-  /** Optional API base for telemetry; overrides the SDK default. */
+  /** Optional API base for telemetry and placement; overrides the SDK default. */
   api_base?: string;
+  /**
+   * `pending` when the API has not placed the call in a region yet: `regions` then lists every
+   * region to probe and the SDK asks the API where to connect. Absent or `placed`: connect to
+   * the region in the credential.
+   */
+  placement?: string;
 }
 
 export interface ParsedCredential {
@@ -31,6 +37,7 @@ export interface ParsedCredential {
   expiresAt: number | null;
   callId: string | null;
   apiBase: string | null;
+  placement: 'pending' | 'placed';
 }
 
 /** Fires `credentialExpiring` this long before `expiresAt`. */
@@ -60,8 +67,10 @@ export function parseCredential(input: CallCredential): ParsedCredential {
 
   return {
     token, url, regions, identity, roomName, expiresAt,
-    callId: firstString(input.call_id) || null,
+    // The API puts the call id into the token's metadata, so a backend that drops call_id still works.
+    callId: firstString(input.call_id, metadataCallId(payload.metadata)) || null,
     apiBase: firstString(input.api_base) || null,
+    placement: input.placement === 'pending' ? 'pending' : 'placed',
   };
 }
 
@@ -102,6 +111,16 @@ export function decodeJwtPayload(token: string): Record<string, unknown> {
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
   } catch {
     return {};
+  }
+}
+
+function metadataCallId(metadata: unknown): string {
+  if (typeof metadata !== 'string') return '';
+  try {
+    const m = JSON.parse(metadata) as { call_id?: unknown } | null;
+    return typeof m?.call_id === 'string' ? m.call_id : '';
+  } catch {
+    return '';
   }
 }
 
